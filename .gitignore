@@ -1,0 +1,10 @@
+*.log
+*.pyc
+*.txt
+*.json
+*.pth
+*.mp4
+*.pth
+logs/
+*.flag
+data/
