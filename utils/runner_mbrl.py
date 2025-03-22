@@ -9,13 +9,23 @@ import signal
 import imageio
 import torch
 import torch.nn.functional as F
-from utils.model import *
+import shutil
+from utils.model_mbrl import *
 from utils.buffer import ExperienceBuffer
 from utils.utils import discount_values, surrogate_loss
 from utils.recorder import Recorder
 from envs import *
 from datetime import datetime
+from torch.distributions import Normal
 
+
+def get_latest_data_dir(base_data_dir, processed_dirs):
+    data_dirs = [d for d in os.listdir(base_data_dir) if d.startswith('data_') and d not in processed_dirs]
+    if not data_dirs:
+        return None
+    data_dirs.sort()
+    latest_data_dir = data_dirs[-1]
+    return os.path.join(base_data_dir, latest_data_dir)
 
 class Runner:
 
@@ -26,21 +36,25 @@ class Runner:
         self._update_cfg_from_args()
         self._set_seed()
         task_class = eval(self.cfg["basic"]["task"])
-        self.env = task_class(self.cfg)
 
         self.device = self.cfg["basic"]["rl_device"]
         self.learning_rate = self.cfg["algorithm"]["learning_rate"]
-        self.model = ActorCritic(self.env.num_actions, self.env.num_obs, 14).to(self.device)
+        self.model = ActorCritic(self.cfg["env"]["num_actions"], self.cfg["env"]["num_observations"], self.cfg["env"]["num_privileged_obs"]).to(self.device)
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.learning_rate)
         self._load()
 
-        self.buffer = ExperienceBuffer(self.cfg["runner"]["horizon_length"], self.env.num_envs, self.device)
-        self.buffer.add_buffer("actions", (self.env.num_actions,))
-        self.buffer.add_buffer("obses", (self.env.num_obs,))
-        self.buffer.add_buffer("privileged_obses", (self.env.num_privileged_obs,))
+        self.buffer = ExperienceBuffer(self.cfg["runner"]["horizon_length"], self.cfg["env"]["num_envs"], self.device)
+        self.buffer.add_buffer("actions", (self.cfg["env"]["num_actions"],))
+        self.buffer.add_buffer("obses", (self.cfg["env"]["num_observations"],))
+        self.buffer.add_buffer("privileged_obses", (self.cfg["env"]["num_privileged_obs"],))
         self.buffer.add_buffer("rewards", ())
         self.buffer.add_buffer("dones", (), dtype=bool)
         self.buffer.add_buffer("time_outs", (), dtype=bool)
+
+        if test:
+            self.cfg["env"]["num_envs"] = 1
+            self.env = task_class(self.cfg)
+
 
     def _get_args(self):
         parser = argparse.ArgumentParser()
@@ -94,36 +108,55 @@ class Runner:
             print(f"Failed to load curriculum: {e}")
         try:
             self.optimizer.load_state_dict(model_dict["optimizer"])
+            self.learning_rate = model_dict["learning_rate"]
         except Exception as e:
             print(f"Failed to load optimizer: {e}")
 
     def train(self):
         self.recorder = Recorder(self.cfg)
-        obs, infos = self.env.reset()
-        obs = obs.to(self.device)
-        privileged_obs = infos["privileged_obs"].to(self.device)
+        generate_data_dir = self.cfg["basic"]["generate_data_dir"]
+        base_data_dir = self.cfg["basic"]["base_data_dir"]
+
+        # # delete the old
+        # if os.path.exists(generate_data_dir):
+        #     shutil.rmtree(generate_data_dir)
+        # if os.path.exists(base_data_dir):
+        #     shutil.rmtree(base_data_dir)
+        # # mkdir
+        # os.makedirs(generate_data_dir, exist_ok=True)
+        # os.makedirs(base_data_dir, exist_ok=True)
+
+        self.recorder.save(
+            {
+                "model": self.model.state_dict(),
+                "optimizer": self.optimizer.state_dict(),
+                "learning_rate": self.learning_rate,
+            },
+            0,
+        )
+
+
+        flag_policy_train = os.path.join(base_data_dir, 'flag_policy_train.flag')
+        processed_dirs = set()
+    
+
         for it in range(self.cfg["basic"]["max_iterations"]):
             # within horizon_length, env.step() is called with same act
-            for n in range(self.cfg["runner"]["horizon_length"]):
-                self.buffer.update_data("obses", n, obs)
-                self.buffer.update_data("privileged_obses", n, privileged_obs)
-                with torch.no_grad():
-                    dist = self.model.act(obs)
-                    act = dist.sample()
-                obs, rew, done, infos = self.env.step(act)
-                obs, rew, done = obs.to(self.device), rew.to(self.device), done.to(self.device)
-                privileged_obs = infos["privileged_obs"].to(self.device)
-                self.buffer.update_data("actions", n, act)
-                self.buffer.update_data("rewards", n, rew)
-                self.buffer.update_data("dones", n, done)
-                self.buffer.update_data("time_outs", n, infos["time_outs"].to(self.device))
-                ep_info = {"reward": rew}
-                ep_info.update(infos["rew_terms"])
-                self.recorder.record_episode_statistics(done, ep_info, it, n == (self.cfg["runner"]["horizon_length"] - 1))
+            print(f"[{datetime.now()}] waitting for world model generate data")
 
-            with torch.no_grad():
-                old_dist = self.model.act(self.buffer["obses"])
-                old_actions_log_prob = old_dist.log_prob(self.buffer["actions"]).sum(dim=-1)
+            while not os.path.exists(flag_policy_train):
+                time.sleep(0.1)
+            data_dir = get_latest_data_dir(generate_data_dir, processed_dirs)
+            processed_dirs.add(os.path.basename(data_dir))
+            print(f"[{datetime.now()}] Processing data from {data_dir}")
+
+
+            self.buffer.load_data(npz_file=data_dir)
+            old_dist_scale = self.buffer["std"]
+            old_dist_loc = self.buffer["mu"]
+
+            old_distribution = Normal(old_dist_loc, old_dist_loc*0. + torch.exp(old_dist_scale))
+            old_actions_log_prob = old_distribution.log_prob(self.buffer["actions"]).sum(dim=-1)
 
             mean_value_loss = 0
             mean_actor_loss = 0
@@ -131,14 +164,14 @@ class Runner:
             mean_entropy = 0
             for n in range(self.cfg["runner"]["mini_epochs"]):
                 values = self.model.est_value(self.buffer["obses"], self.buffer["privileged_obses"])
-                last_values = self.model.est_value(obs, privileged_obs)
+                last_values = self.buffer["last_values"]
                 with torch.no_grad():
-                    self.buffer["rewards"][self.buffer["time_outs"]] = values[self.buffer["time_outs"]]
+                    self.buffer["rewards"][self.buffer["dones"].to(dtype=torch.bool)] = values[self.buffer["dones"].to(dtype=torch.bool)]
                     advantages = discount_values(
                         self.buffer["rewards"],
-                        self.buffer["dones"] | self.buffer["time_outs"],
+                        self.buffer["dones"],
                         values,
-                        last_values,
+                        last_values.squeeze(1),
                         self.cfg["algorithm"]["gamma"],
                         self.cfg["algorithm"]["lam"],
                     )
@@ -167,12 +200,12 @@ class Runner:
 
                 with torch.no_grad():
                     kl = torch.sum(
-                        torch.log(dist.scale / old_dist.scale)
-                        + 0.5 * (torch.square(old_dist.scale) + torch.square(dist.loc - old_dist.loc)) / torch.square(dist.scale)
-                        - 0.5,
+                        torch.log(dist.scale / old_dist_scale) + 0.5 * (torch.square(old_dist_scale) + torch.square(dist.loc - old_dist_loc)) / torch.square(dist.scale) - 0.5,
                         axis=-1,
                     )
                     kl_mean = torch.mean(kl)
+
+
                     if kl_mean > self.cfg["algorithm"]["desired_kl"] * 2:
                         self.learning_rate = max(1e-5, self.learning_rate / 1.5)
                     elif kl_mean < self.cfg["algorithm"]["desired_kl"] / 2:
@@ -196,29 +229,29 @@ class Runner:
                     "entropy": mean_entropy,
                     "kl_mean": kl_mean,
                     "lr": self.learning_rate,
-                    "curriculum/mean_lin_vel_level": self.env.mean_lin_vel_level,
-                    "curriculum/mean_ang_vel_level": self.env.mean_ang_vel_level,
-                    "curriculum/max_lin_vel_level": self.env.max_lin_vel_level,
-                    "curriculum/max_ang_vel_level": self.env.max_ang_vel_level,
                 },
                 it,
             )
 
-            if (it + 1) % self.cfg["runner"]["save_interval"] == 0:
-                self.recorder.save(
-                    {
-                        "model": self.model.state_dict(),
-                        "optimizer": self.optimizer.state_dict(),
-                        "curriculum": self.env.curriculum_prob,
-                    },
-                    it + 1,
-                )
+            #if (it + 1) % self.cfg["runner"]["save_interval"] == 0:
+            self.recorder.save(
+                {
+                    "model": self.model.state_dict(),
+                    "optimizer": self.optimizer.state_dict(),
+                    "learning_rate": self.learning_rate,
+                },
+                it + 1,
+            )
             print("epoch: {}/{}".format(it + 1, self.cfg["basic"]["max_iterations"]))
 
+            os.remove(data_dir)
+            os.remove(flag_policy_train)
+            print("Train Done, delete flag and data, continue to generate data。")
+
     def play(self):
-        plot_reward = True
-        base_data_dir = '/home/admin123/booster_gym/data'
-        max_total_steps = 1000
+        plot_reward = False
+        base_data_dir = self.cfg["basic"]["base_data_dir"]
+        max_total_steps = self.cfg["basic"]["max_total_steps"]
         num_envs = self.env.num_envs
         step_count = 0
         data_dict =  {
@@ -237,7 +270,6 @@ class Runner:
             for _ in range(num_envs)
         ]
         data_counts = [0] * num_envs
-        # 创建新的数据文件夹
 
         data_dir = os.path.join(base_data_dir, 'data_' + datetime.now().strftime('%Y%m%d_%H%M%S'))
         os.makedirs(data_dir, exist_ok=True)
@@ -246,14 +278,11 @@ class Runner:
         obs = obs.to(self.device)
         obs_cpu = obs.cpu().numpy()
         pri_obs_cpu = infos["privileged_obs"].cpu().numpy()
-        if self.cfg["viewer"]["record_video"]:
-            os.makedirs("videos", exist_ok=True)
-            name = time.strftime("%Y-%m-%d-%H-%M-%S.mp4", time.localtime())
-            record_time = self.cfg["viewer"]["record_interval"]
+
         while True:
+
             with torch.no_grad():
                 episode_length_buf = self.env.episode_length_buf.cpu().numpy().copy()
-                print("episode_length_buf", episode_length_buf)
                 dist = self.model.act(obs)
                 act = dist.loc
                 obs, rew, done, infos = self.env.step(act)
@@ -281,13 +310,13 @@ class Runner:
                         data_buffers[env_idx]['reward_' +name].append(locals()['reward'+name][env_idx].item())
                         if "height" in name:
                             print("height", infos['rew_terms'][name])
-            done = time_outs | done
+            done = done
             env_ids = done.nonzero(as_tuple=False).flatten()
             obs_cpu = obs.cpu().numpy()
             pri_obs_cpu = infos["privileged_obs"].cpu().numpy()
 
             for env_id in env_ids:
-                # 保存数据到 .npz 文件
+                # save npz
                 npz_filename = os.path.join(
                     data_dir,
                     f'env_{env_id}_data_{data_counts[env_id]}.npz',
@@ -355,14 +384,17 @@ class Runner:
                 print("episode_length_buf[env_id]", episode_length_buf[env_id])
             if step_count > max_total_steps:# or episode_length_buf[env_id]!= 1000:
                 step_count = 0
-                print("数据采集完成，等待world model训练。")
-                flag_file = os.path.join(base_data_dir, 'waiting_for_training.flag')
-                open(flag_file, 'w').close()
-                while os.path.exists(flag_file):
+                print("Collect Done, waiting for world model and policy training。")
+                flag_model_train = os.path.join(base_data_dir, 'flag_model_train.flag')
+                open(flag_model_train, 'w').close()
+                while os.path.exists(flag_model_train):
                     time.sleep(3)  # 每隔10秒检查一次
-                print("训练完成，重新加载 policy 并继续数据采集。")
-
-
+                print("Train Done. Collecting data.")
+                self.cfg["basic"]["checkpoint"] = -1
+                self._load() # load the newest model
+                data_dir = os.path.join(base_data_dir, 'data_' + datetime.now().strftime('%Y%m%d_%H%M%S'))
+                os.makedirs(data_dir, exist_ok=True)
+                data_counts = [0] * num_envs
 
     def interrupt_handler(self, signal, frame):
         print("\nInterrupt received, waiting for video to finish...")

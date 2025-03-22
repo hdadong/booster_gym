@@ -609,7 +609,7 @@ class T1_MBRL(BaseTask):
                 self.base_mass_scaled,
                 apply_randomization(self.base_lin_vel, self.cfg["noise"].get("lin_vel")) * self.cfg["normalization"]["lin_vel"],
                 apply_randomization(self.base_pos[:, 2] - self.terrain.terrain_heights(self.base_pos), self.cfg["noise"].get("height")).unsqueeze(-1),
-                apply_randomization(self.base_euler_xyz, self.cfg["noise"].get("euler")),
+                (apply_randomization(self.base_euler_xyz, self.cfg["noise"].get("euler")) + torch.pi) % (2 * torch.pi) - torch.pi,
                 self.gait_process.unsqueeze(-1),
                 self.gait_frequency.unsqueeze(-1),
             ),

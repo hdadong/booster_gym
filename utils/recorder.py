@@ -4,7 +4,7 @@ import os
 import time
 import wandb
 import yaml
-
+import datetime
 
 class Recorder:
 
@@ -17,14 +17,11 @@ class Recorder:
         os.mkdir(self.model_dir)
         self.writer = SummaryWriter(os.path.join(self.dir, "summaries"))
         if self.cfg["runner"]["use_wandb"]:
-            wandb.init(
-                project=self.cfg["basic"]["task"],
-                dir=self.dir,
-                name=name,
-                notes=self.cfg["basic"]["description"],
-                config=self.cfg,
-            )
-
+            wandb.init(project=('booster_bptt'),
+                    dir=self.dir,
+                    name = str(datetime.datetime.now()) + 'policy_train',
+                    notes=self.cfg["basic"]["description"],
+                    config=self.cfg)
         self.episode_statistics = {}
         self.last_episode = {}
         self.last_episode["steps"] = []
@@ -34,6 +31,34 @@ class Recorder:
             yaml.dump(self.cfg, file)
 
     def record_episode_statistics(self, done, ep_info, it, write_record=False):
+        if self.episode_steps is None:
+            self.episode_steps = torch.zeros_like(done, dtype=int)
+        else:
+            self.episode_steps += 1
+        for val in self.episode_steps[done]:
+            self.last_episode["steps"].append(val.item())
+        self.episode_steps[done] = 0
+
+        for key, value in ep_info.items():
+            if self.episode_statistics.get(key) is None:
+                self.episode_statistics[key] = torch.zeros_like(value)
+            self.episode_statistics[key] += value
+            if self.last_episode.get(key) is None:
+                self.last_episode[key] = []
+            for done_value in self.episode_statistics[key][done]:
+                self.last_episode[key].append(done_value.item())
+            self.episode_statistics[key][done] = 0
+
+        if write_record:
+            for key in self.last_episode.keys():
+                path = ("" if key == "steps" or key == "reward" else "episode/") + key
+                value = self._mean(self.last_episode[key])
+                self.writer.add_scalar(path, value, it)
+                if self.cfg["runner"]["use_wandb"]:
+                    wandb.log({path: value}, step=it)
+                self.last_episode[key].clear()
+
+    def record_worldmode_episode_statistics(self, done, ep_info, it, write_record=False):
         if self.episode_steps is None:
             self.episode_steps = torch.zeros_like(done, dtype=int)
         else:

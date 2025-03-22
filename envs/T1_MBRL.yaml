@@ -1,14 +1,16 @@
 basic:
   checkpoint: null # set to -1 to load last saved model
   headless: false
-  max_iterations: 10000 # set the maximum number of learning iterations to train for
+  max_iterations: 1000000 # set the maximum number of learning iterations to train for
   sim_device: "cuda:0" # device for physics simulation
   rl_device: "cuda:0" # device for the RL algorithm
   seed: 49 # seed - set to -1 to choose random seed
   description: ""
-
+  generate_data_dir: "/home/admin123/transformer_worldmodel/ssrl/scripts/generate_data"
+  base_data_dir: '/home/admin123/booster_gym/data'
+  max_total_steps: 1500 # 30s / 0.02
 env:
-  num_envs: 1
+  num_envs: 400
   num_observations: 47
   num_privileged_obs: 13
   num_actions: 12
