@@ -10,6 +10,7 @@ import imageio
 import torch
 import torch.nn.functional as F
 import shutil
+import gc
 from utils.model_mbrl import *
 from utils.buffer import ExperienceBuffer
 from utils.utils import discount_values, surrogate_loss
@@ -35,7 +36,7 @@ class Runner:
         self._get_args()
         self._update_cfg_from_args()
         self._set_seed()
-        task_class = eval(self.cfg["basic"]["task"])
+        self.task_class = eval(self.cfg["basic"]["task"])
 
         self.device = self.cfg["basic"]["rl_device"]
         self.learning_rate = self.cfg["algorithm"]["learning_rate"]
@@ -51,9 +52,7 @@ class Runner:
         self.buffer.add_buffer("dones", (), dtype=bool)
         self.buffer.add_buffer("time_outs", (), dtype=bool)
 
-        if test:
-            self.cfg["env"]["num_envs"] = 1
-            self.env = task_class(self.cfg)
+
 
 
     def _get_args(self):
@@ -111,20 +110,20 @@ class Runner:
             self.learning_rate = model_dict["learning_rate"]
         except Exception as e:
             print(f"Failed to load optimizer: {e}")
-
+        del model_dict
     def train(self):
-        self.recorder = Recorder(self.cfg)
+        self.recorder = Recorder(self.cfg, name="policy_train")
         generate_data_dir = self.cfg["basic"]["generate_data_dir"]
         base_data_dir = self.cfg["basic"]["base_data_dir"]
 
-        # # delete the old
-        # if os.path.exists(generate_data_dir):
-        #     shutil.rmtree(generate_data_dir)
-        # if os.path.exists(base_data_dir):
-        #     shutil.rmtree(base_data_dir)
-        # # mkdir
-        # os.makedirs(generate_data_dir, exist_ok=True)
-        # os.makedirs(base_data_dir, exist_ok=True)
+        # delete the old
+        if os.path.exists(generate_data_dir):
+            shutil.rmtree(generate_data_dir)
+        if os.path.exists(base_data_dir):
+            shutil.rmtree(base_data_dir)
+        # mkdir
+        os.makedirs(generate_data_dir, exist_ok=True)
+        os.makedirs(base_data_dir, exist_ok=True)
 
         self.recorder.save(
             {
@@ -233,7 +232,6 @@ class Runner:
                 it,
             )
 
-            #if (it + 1) % self.cfg["runner"]["save_interval"] == 0:
             self.recorder.save(
                 {
                     "model": self.model.state_dict(),
@@ -249,30 +247,25 @@ class Runner:
             print("Train Done, delete flag and data, continue to generate data。")
 
     def play(self):
+        self.cfg["env"]["num_envs"] = 1
+        self.env = self.task_class(self.cfg)
         plot_reward = False
         base_data_dir = self.cfg["basic"]["base_data_dir"]
         max_total_steps = self.cfg["basic"]["max_total_steps"]
         num_envs = self.env.num_envs
         step_count = 0
-        data_dict =  {
-                'observations': [],
-                'pri_observations': [],
-                'actions': [],
-                'torques': [],
-                'contacts':[],
-                'rewards': [],
-                'timestamps': []
-            } 
-        if plot_reward:
-            data_dict.update({f'reward_{name}': [] for name in self.env.reward_names})
-        data_buffers = [
-            data_dict
-            for _ in range(num_envs)
-        ]
+        num_collect = 0
+        data_buffers = [self.create_data_dict(plot_reward=plot_reward, reward_names=self.env.reward_names) for _ in range(num_envs)]
         data_counts = [0] * num_envs
-
         data_dir = os.path.join(base_data_dir, 'data_' + datetime.now().strftime('%Y%m%d_%H%M%S'))
         os.makedirs(data_dir, exist_ok=True)
+        self.recorder = Recorder(self.cfg, name="collect_data", log_path="collect_data")
+
+        flag_model_train = os.path.join(base_data_dir, 'flag_model_train.flag')
+
+        while os.path.exists(flag_model_train):
+            time.sleep(3)  # 每隔10秒检查一次
+
 
         obs, infos = self.env.reset()
         obs = obs.to(self.device)
@@ -285,15 +278,18 @@ class Runner:
                 episode_length_buf = self.env.episode_length_buf.cpu().numpy().copy()
                 dist = self.model.act(obs)
                 act = dist.loc
-                obs, rew, done, infos = self.env.step(act)
+                obs, rew, done, infos = self.env.step(act.detach())
                 obs, rew, done = obs.to(self.device), rew.to(self.device), done.to(self.device)
                 time_outs = infos["time_outs"].to(self.device)
-            actions_cpu = act.cpu().numpy()
+                ep_info = {"reward": rew}
+                ep_info.update(infos["rew_terms"])
+
+            actions_cpu = act.detach().cpu().numpy()
             torques_cpu = self.env.torques.cpu().numpy()
             rews_cpu = rew.cpu().numpy()
             current_time = time.time()
             contact_cpu = self.env.feet_contact.cpu().numpy()
-
+            sub_reward_dict = {}
             for env_idx in range(obs.shape[0]):
                 data_buffers[env_idx]['observations'].append(obs_cpu[env_idx])
                 data_buffers[env_idx]['pri_observations'].append(pri_obs_cpu[env_idx])
@@ -305,12 +301,12 @@ class Runner:
                 if plot_reward:
                     for i in range(len(self.env.reward_functions)):
                         name = self.env.reward_names[i]
-                        locals()['reward'+name] = infos['rew_terms'][name]
+                        sub_reward_dict['reward'+name] = infos['rew_terms'][name]
                         name = self.env.reward_names[i]
-                        data_buffers[env_idx]['reward_' +name].append(locals()['reward'+name][env_idx].item())
+                        data_buffers[env_idx]['reward_' +name].append(sub_reward_dict['reward'+name][env_idx].item())
                         if "height" in name:
                             print("height", infos['rew_terms'][name])
-            done = done
+            del sub_reward_dict
             env_ids = done.nonzero(as_tuple=False).flatten()
             obs_cpu = obs.cpu().numpy()
             pri_obs_cpu = infos["privileged_obs"].cpu().numpy()
@@ -330,13 +326,11 @@ class Runner:
                 rewards_array = np.array(data_buffers[env_id]['rewards'], dtype=np.float32)
                 timestamps_array = np.array(data_buffers[env_id]['timestamps'], dtype=np.float64)
 
-
                 if plot_reward:
                     reward_comp = {}
                     for name in self.env.reward_names:
                         rew_array = np.array(data_buffers[env_id]['reward_' + name], dtype=np.float32)
                         reward_comp['reward_'+name] = rew_array
-                    print(reward_comp)
                     np.savez_compressed(
                         npz_filename,
                         observations=obs_array,
@@ -360,6 +354,7 @@ class Runner:
                         timestamps=timestamps_array,
                     )
                 # 清空该环境的数据缓冲区
+                del obs_array, pri_obs_array, actions_array, torques_array, contacts_array, rewards_array, timestamps_array
                 data_buffers[env_id]['observations'].clear()
                 data_buffers[env_id]['pri_observations'].clear()
                 data_buffers[env_id]['actions'].clear()
@@ -371,7 +366,7 @@ class Runner:
                     for i in range(len(self.env.reward_functions)):
                         name = self.env.reward_names[i]
                         data_buffers[env_idx]['reward_' +name].clear()
-
+                data_buffers[env_id] = self.create_data_dict(plot_reward=plot_reward, reward_names=self.env.reward_names)
                 data_counts[env_id] += 1
 
                 # load npz and check the size of the data
@@ -379,13 +374,19 @@ class Runner:
                     data_dir,
                     f'env_{env_id}_data_{data_counts[env_id]-1}.npz',
                 )
-                #data = np.load(npz_filename)
                 step_count += episode_length_buf[env_id]
+                
                 print("episode_length_buf[env_id]", episode_length_buf[env_id])
+            
+            self.recorder.record_episode_statistics(done, ep_info, num_collect, step_count > max_total_steps)
+
             if step_count > max_total_steps:# or episode_length_buf[env_id]!= 1000:
+                num_collect +=1
+
                 step_count = 0
+                torch.cuda.empty_cache()
+                gc.collect()
                 print("Collect Done, waiting for world model and policy training。")
-                flag_model_train = os.path.join(base_data_dir, 'flag_model_train.flag')
                 open(flag_model_train, 'w').close()
                 while os.path.exists(flag_model_train):
                     time.sleep(3)  # 每隔10秒检查一次
@@ -395,6 +396,23 @@ class Runner:
                 data_dir = os.path.join(base_data_dir, 'data_' + datetime.now().strftime('%Y%m%d_%H%M%S'))
                 os.makedirs(data_dir, exist_ok=True)
                 data_counts = [0] * num_envs
+
+
+    def create_data_dict(self, plot_reward=False, reward_names=[]):
+        d = {
+            'observations': [],
+            'pri_observations': [],
+            'actions': [],
+            'torques': [],
+            'contacts': [],
+            'rewards': [],
+            'timestamps': []
+        }
+        if plot_reward:
+            d.update({f'reward_{name}': [] for name in reward_names})
+        return d
+
+
 
     def interrupt_handler(self, signal, frame):
         print("\nInterrupt received, waiting for video to finish...")

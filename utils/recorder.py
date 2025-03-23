@@ -8,10 +8,10 @@ import datetime
 
 class Recorder:
 
-    def __init__(self, cfg):
+    def __init__(self, cfg, name='', log_path="logs"):
         self.cfg = cfg
-        name = time.strftime("%Y-%m-%d-%H-%M-%S", time.localtime())
-        self.dir = os.path.join("logs", name)
+        time_name = time.strftime("%Y-%m-%d-%H-%M-%S", time.localtime())
+        self.dir = os.path.join(log_path, time_name)
         os.makedirs(self.dir)
         self.model_dir = os.path.join(self.dir, "nn")
         os.mkdir(self.model_dir)
@@ -19,7 +19,7 @@ class Recorder:
         if self.cfg["runner"]["use_wandb"]:
             wandb.init(project=('booster_bptt'),
                     dir=self.dir,
-                    name = str(datetime.datetime.now()) + 'policy_train',
+                    name = str(datetime.datetime.now()) + '_' + name,
                     notes=self.cfg["basic"]["description"],
                     config=self.cfg)
         self.episode_statistics = {}

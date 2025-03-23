@@ -8,3 +8,5 @@
 logs/
 *.flag
 data/
+collect_data/
+data2/
