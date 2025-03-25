@@ -81,15 +81,40 @@ Follow these steps to set up your environment:
 
 ## Usage
 
-### 1. Training
+### 1. Training using PPO
 
 To start training a policy, run the following command:
 
 ```sh
 $ python train.py --task=T1
+
+```
+### 2. Training using MBRL
+
+To start training a policy, run the following command:
+
+```sh
+
+$ python play_mbrl_train_policy.py --task=T1_MBRL
+
+$ python play_mbrl_collect_data.py --task=T1_MBRL
+
+```
+
+### 2. Training using MBRL baseline PPO
+
+To start training a policy, run the following command:
+
+```sh
+
+$ python play_ppobaseline_train_policy.py --task=T1_MBRL_baseline 
+
+$ python play_ppobaseline_collect_data.py --task=T1_MBRL_baseline
+
 ```
 
 Training logs and saved models will be stored in `logs/<date-time>/`.
+
 
 #### Configurations
 
@@ -140,7 +165,7 @@ Videos of the evaluation are automatically saved in `videos/<date-time>.mp4`. Yo
 To test the policy in MuJoCo, run:
 
 ```sh
-$ python play_mujoco.py --task=T1 --checkpoint=-1
+$ python play_mujoco.py --task=T1 --checkpoint=/home/admin123/booster_gym/logs/2025-03-23-21-53-21/nn/model_4400.pth
 ```
 
 ---
