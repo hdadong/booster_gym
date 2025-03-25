@@ -32,6 +32,7 @@ class Runner:
 
     def __init__(self, test=False):
         self.test = test
+        self.policy_path = None
         # prepare the environment
         self._get_args()
         self._update_cfg_from_args()
@@ -96,8 +97,15 @@ class Runner:
     def _load(self):
         if not self.cfg["basic"]["checkpoint"]:
             return
-        if (self.cfg["basic"]["checkpoint"] == "-1") or (self.cfg["basic"]["checkpoint"] == -1):
-            self.cfg["basic"]["checkpoint"] = sorted(glob.glob(os.path.join("logs", "**/*.pth"), recursive=True), key=os.path.getmtime)[-1]
+        if self.policy_path == None:
+            if (self.cfg["basic"]["checkpoint"] == "-1") or (self.cfg["basic"]["checkpoint"] == -1):
+                self.cfg["basic"]["checkpoint"] = sorted(glob.glob(os.path.join("logs", "**/*.pth"), recursive=True), key=os.path.getmtime)[-1]
+            self.policy_path = self.cfg["basic"]["checkpoint"].split('/')[1]
+
+        else:
+            if (self.cfg["basic"]["checkpoint"] == "-1") or (self.cfg["basic"]["checkpoint"] == -1):
+                self.cfg["basic"]["checkpoint"] = sorted(glob.glob(os.path.join("logs/"+self.policy_path+"/", "**/*.pth"), recursive=True), key=os.path.getmtime)[-1]
+
         print("Loading model from {}".format(self.cfg["basic"]["checkpoint"]))
         model_dict = torch.load(self.cfg["basic"]["checkpoint"], map_location=self.device, weights_only=True)
         self.model.load_state_dict(model_dict["model"], strict=False)
