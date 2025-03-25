@@ -107,9 +107,11 @@ To start training a policy, run the following command:
 
 ```sh
 
-$ python play_ppobaseline_train_policy.py --task=T1_MBRL_baseline 
+$ python play_ppobaseline_train_policy.py --task=T1_MBRL_baseline --sim_device=cuda:1 --rl_device=cuda:1
 
-$ python play_ppobaseline_collect_data.py --task=T1_MBRL_baseline
+$ python play_ppobaseline_collect_data.py --task=T1_MBRL_baseline --sim_device=cuda:1 --rl_device=cuda:1
+
+
 
 ```
 
@@ -166,6 +168,8 @@ To test the policy in MuJoCo, run:
 
 ```sh
 $ python play_mujoco.py --task=T1 --checkpoint=/home/admin123/booster_gym/logs/2025-03-23-21-53-21/nn/model_4400.pth
+
+$ python play_mujoco.py --task=T1_MBRL_baseline
 ```
 
 ---

@@ -11,7 +11,7 @@ import torch
 import torch.nn.functional as F
 import shutil
 import gc
-from utils.model_mbrl import *
+from utils.model import *
 from utils.buffer import ExperienceBuffer
 from utils.utils import discount_values, surrogate_loss
 from utils.recorder import Recorder
@@ -20,13 +20,13 @@ from datetime import datetime
 from torch.distributions import Normal
 
 
-def get_latest_data_dir(base_data_dir, processed_dirs):
-    data_dirs = [d for d in os.listdir(base_data_dir) if d.startswith('data_') and d not in processed_dirs]
+def get_latest_data_dir(generate_data_dir, processed_dirs):
+    data_dirs = [d for d in os.listdir(generate_data_dir) if d.startswith('data_') and d not in processed_dirs]
     if not data_dirs:
         return None
     data_dirs.sort()
     latest_data_dir = data_dirs[-1]
-    return os.path.join(base_data_dir, latest_data_dir)
+    return os.path.join(generate_data_dir, latest_data_dir)
 
 class Runner:
 
@@ -105,7 +105,7 @@ class Runner:
         else:
             if (self.cfg["basic"]["checkpoint"] == "-1") or (self.cfg["basic"]["checkpoint"] == -1):
                 self.cfg["basic"]["checkpoint"] = sorted(glob.glob(os.path.join("logs/"+self.policy_path+"/", "**/*.pth"), recursive=True), key=os.path.getmtime)[-1]
-
+        print("self.policy_path", self.policy_path)
         print("Loading model from {}".format(self.cfg["basic"]["checkpoint"]))
         model_dict = torch.load(self.cfg["basic"]["checkpoint"], map_location=self.device, weights_only=True)
         self.model.load_state_dict(model_dict["model"], strict=False)
@@ -121,17 +121,7 @@ class Runner:
         del model_dict
     def train(self):
         self.recorder = Recorder(self.cfg, name="policy_train")
-        generate_data_dir = self.cfg["basic"]["generate_data_dir"]
-        base_data_dir = self.cfg["basic"]["base_data_dir"]
 
-        # delete the old
-        if os.path.exists(generate_data_dir):
-            shutil.rmtree(generate_data_dir)
-        if os.path.exists(base_data_dir):
-            shutil.rmtree(base_data_dir)
-        # mkdir
-        os.makedirs(generate_data_dir, exist_ok=True)
-        os.makedirs(base_data_dir, exist_ok=True)
 
         self.recorder.save(
             {
@@ -141,9 +131,14 @@ class Runner:
             },
             0,
         )
+        self.cfg["basic"]["checkpoint"] = -1
+        self._load()
+        generate_data_dir = os.path.join("logs/", os.path.join(self.policy_path, 'generate_data'))
+        # mkdir
+        os.makedirs(generate_data_dir, exist_ok=True)
 
 
-        flag_policy_train = os.path.join(base_data_dir, 'flag_policy_train.flag')
+        flag_policy_train = os.path.join(generate_data_dir, 'flag_policy_train.flag')
         processed_dirs = set()
     
 
@@ -175,13 +170,14 @@ class Runner:
             mean_entropy = 0
             for n in range(self.cfg["runner"]["mini_epochs"]):
                 values = self.model.est_value(self.buffer["obses"], self.buffer["privileged_obses"])
-                last_values = self.buffer["last_values"]
+                last_values = self.model.est_value(self.buffer["last_obses"], self.buffer["last_pri_obses"])
+
                 with torch.no_grad():
                     # TODO: check rewards done
-                    #self.buffer["rewards"][self.buffer["dones"].to(dtype=torch.bool)] = values[self.buffer["dones"].to(dtype=torch.bool)]
+                    self.buffer["rewards"][self.buffer["time_outs"]] = values[self.buffer["time_outs"]]
                     advantages = discount_values(
                         self.buffer["rewards"],
-                        self.buffer["dones"],
+                        self.buffer["dones"] | self.buffer["time_outs"],
                         values,
                         last_values,
                         self.cfg["algorithm"]["gamma"],
@@ -261,22 +257,24 @@ class Runner:
 
 
     def play(self):
+        self.cfg["basic"]["checkpoint"] = -1
+        self._load()
         self.cfg["env"]["num_envs"] = 4096
         self.env = self.task_class(self.cfg)
-        base_data_dir = self.cfg["basic"]["base_data_dir"]
-        generate_data_dir = self.cfg["basic"]["generate_data_dir"]
-        
+        generate_data_dir = os.path.join("logs/", os.path.join(self.policy_path, 'generate_data'))
+
         observations_list = []
         pri_observations_list = []
         actions_list = []
         rewards_list = []
         dones_list = []
+        time_outs_list = []
 
         num_collect =0 
         self.recorder = Recorder(self.cfg, name="collect_data", log_path="collect_data")
 
-        flag_policy_train = os.path.join(base_data_dir, 'flag_policy_train.flag')
-
+        flag_policy_train = os.path.join(generate_data_dir, 'flag_policy_train.flag')
+        print("flag_policy_train", flag_policy_train)
         while os.path.exists(flag_policy_train):
             time.sleep(3)  # 每隔10秒检查一次
 
@@ -301,14 +299,15 @@ class Runner:
             actions_cpu = act.detach().cpu().numpy()
             torques_cpu = self.env.torques.cpu().numpy()
             rews_cpu = rew.cpu().numpy()
-            dones = done | time_outs
-            dones_cpu = dones.cpu().numpy()
+            dones_cpu = done.cpu().numpy()
+            time_outs_cpu = time_outs.cpu().numpy()
+
             observations_list.append(obs_cpu)
             pri_observations_list.append(pri_obs_cpu)
             actions_list.append(actions_cpu)
             rewards_list.append(rews_cpu)
             dones_list.append(dones_cpu)
-
+            time_outs_list.append(time_outs_cpu)
 
             obs_cpu = obs.cpu().numpy()
             pri_obs_cpu = infos["privileged_obs"].cpu().numpy()
@@ -319,8 +318,10 @@ class Runner:
                 pri_obs_array = np.array(pri_observations_list, dtype=np.float32)
                 action_array = np.array(actions_list, dtype=np.float32)
                 reward_array = np.array(rewards_list, dtype=np.float32)
-                done_array = np.array(dones_list, dtype=np.float32)
-                last_value_array = self.model.est_value(obs, infos["privileged_obs"]).cpu().detach().numpy()
+                done_array = np.array(dones_list, dtype=np.bool)
+                timeout_array = np.array(time_outs_list, dtype=np.bool)
+                last_observations = obs_cpu
+                last_pri_observations=pri_obs_cpu
 
                 if not os.path.exists(generate_data_dir):
                     os.makedirs(generate_data_dir, exist_ok=True)
@@ -333,7 +334,9 @@ class Runner:
                     actions=action_array,
                     rewards=reward_array,
                     dones=done_array,
-                    last_value=last_value_array,
+                    timeouts=timeout_array,
+                    last_observations=last_observations,
+                    last_pri_observations=last_pri_observations,
 
                 )
 
@@ -342,7 +345,7 @@ class Runner:
                 actions_list = []
                 rewards_list = []
                 dones_list = []
-
+                time_outs_list = []
                 torch.cuda.empty_cache()
                 gc.collect()
                 print("Collect Done, waiting for policy training。")

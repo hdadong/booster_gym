@@ -168,8 +168,8 @@ class T1_MBRL_baseline(BaseTask):
     def _process_rigid_shape_props(self, props):
         for i in self.foot_shape_indices:
             props[i].friction = apply_randomization(0.0, self.cfg["randomization"].get("friction"))
-            # props[i].compliance = apply_randomization(0.0, self.cfg["randomization"].get("compliance"))
-            # props[i].restitution = apply_randomization(0.0, self.cfg["randomization"].get("restitution"))
+            props[i].compliance = apply_randomization(0.0, self.cfg["randomization"].get("compliance"))
+            props[i].restitution = apply_randomization(0.0, self.cfg["randomization"].get("restitution"))
         return props
 
     def _get_env_origins(self):
@@ -609,9 +609,8 @@ class T1_MBRL_baseline(BaseTask):
                 self.base_mass_scaled,
                 apply_randomization(self.base_lin_vel, self.cfg["noise"].get("lin_vel")) * self.cfg["normalization"]["lin_vel"],
                 apply_randomization(self.base_pos[:, 2] - self.terrain.terrain_heights(self.base_pos), self.cfg["noise"].get("height")).unsqueeze(-1),
-                (apply_randomization(self.base_euler_xyz, self.cfg["noise"].get("euler")) + torch.pi) % (2 * torch.pi) - torch.pi,
-                self.gait_process.unsqueeze(-1),
-                self.gait_frequency.unsqueeze(-1),
+                self.pushing_forces[:, 0, :] * self.cfg["normalization"]["push_force"],
+                self.pushing_torques[:, 0, :] * self.cfg["normalization"]["push_torque"],
             ),
             dim=-1,
         )
