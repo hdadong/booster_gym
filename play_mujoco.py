@@ -7,9 +7,43 @@ import argparse
 import numpy as np
 import torch
 import mujoco, mujoco.viewer
-from utils.model import *
+from utils.model_mbrl import *
 
 
+class normalizer():
+    def __init__(self):
+        self.device='cpu'
+        # Normalization limits
+        self.obs_limit_min = torch.full((1, 47), -1.0, device=self.device)  # Min values
+        self.obs_limit_max = torch.full((1, 47), 1.0, device=self.device)   # Max values
+
+
+        indice_angvel = [i for i in range(3, 6, 1)]
+        self.obs_limit_min[:, indice_angvel] = torch.tensor([-2.0, -2.0, -2.0], device=self.device) # TODO
+        self.obs_limit_max[:, indice_angvel] = torch.tensor([2.0, 2.0, 2.0], device=self.device) # TODO
+
+        indice_dof_pos = [i for i in range(11, 23, 1)]
+        self.obs_limit_min[:, indice_dof_pos] = torch.tensor([-1.8, -0.3, -1.0, 0.0, -0.87, -0.44, -1.8, -1.57, -1.0, 0.0, -0.87, -0.44], device=self.device)
+        self.obs_limit_max[:, indice_dof_pos] = torch.tensor([1.57, 1.57, 1.0, 2.34, 0.35, 0.44, 1.57, 0.3, 1.0, 2.34, 0.35, 0.44], device=self.device)
+
+        indice_dof_vel = [i for i in range(23, 35, 1)]
+        self.obs_limit_min[:, indice_dof_vel] = torch.tensor([-12.5, -10.9, -10.9, -11.7, -18.8, -12.4, -12.5, -10.9, -10.9, -11.7, -18.8, -12.4], device=self.device)
+        self.obs_limit_max[:, indice_dof_vel] = torch.tensor([12.5, 10.9, 10.9, 11.7, 18.8, 12.4, 12.5, 10.9, 10.9, 11.7, 18.8, 12.4], device=self.device)
+
+        indice_last_action = [i for i in range(35, 47, 1)]
+        self.obs_limit_min[:, indice_last_action] = torch.tensor([-1.8, -0.3, -1.0, 0.0, -0.87, -0.44, -1.8, -1.57, -1.0, 0.0, -0.87, -0.44], device=self.device)
+        self.obs_limit_max[:, indice_last_action] = torch.tensor([1.57, 1.57, 1.0, 2.34, 0.35, 0.44, 1.57, 0.3, 1.0, 2.34, 0.35, 0.44], device=self.device)
+
+
+    def normalize_obs(self, obs):
+        # Normalize observation
+        normalized_obs = 2 * (obs - self.obs_limit_min) / (self.obs_limit_max - self.obs_limit_min) - 1
+        return normalized_obs
+
+    def denormalize_obs(self, normalize_obs):
+        obs = (normalize_obs + 1)*(self.obs_limit_max - self.obs_limit_min)/2 + self.obs_limit_min
+        return obs
+        
 def quat_rotate_inverse(q, v):
     q_w = q[-1]
     q_vec = q[:3]
@@ -29,8 +63,8 @@ if __name__ == "__main__":
         cfg = yaml.load(f.read(), Loader=yaml.FullLoader)
     if args.checkpoint is not None:
         cfg["basic"]["checkpoint"] = args.checkpoint
+    model = ActorCritic(cfg["env"]["num_actions"], cfg["env"]["num_observations"] * cfg["env"]["obs_frame_stack"], cfg["env"]["num_privileged_obs"]* cfg["env"]["pri_obs_frame_stack"])
 
-    model = ActorCritic(cfg["env"]["num_actions"], cfg["env"]["num_observations"], cfg["env"]["num_privileged_obs"])
     if not cfg["basic"]["checkpoint"] or (cfg["basic"]["checkpoint"] == "-1") or (cfg["basic"]["checkpoint"] == -1):
         cfg["basic"]["checkpoint"] = sorted(glob.glob(os.path.join("logs", "**/*.pth"), recursive=True), key=os.path.getmtime)[-1]
     print("Loading model from {}".format(cfg["basic"]["checkpoint"]))
@@ -75,6 +109,8 @@ if __name__ == "__main__":
     gait_frequency = gait_process = 0.0
     lin_vel_x = lin_vel_y = ang_vel_yaw = 0.0
     it = 0
+    norm_obs_stack = np.zeros(47*5)
+    obs_normalizer = normalizer()
 
     with mujoco.viewer.launch_passive(mj_model, mj_data) as viewer:
         viewer.cam.elevation = -20
@@ -114,7 +150,16 @@ if __name__ == "__main__":
                 obs[11:23] = (dof_pos - default_dof_pos) * cfg["normalization"]["dof_pos"]
                 obs[23:35] = dof_vel * cfg["normalization"]["dof_vel"]
                 obs[35:47] = actions
-                dist = model.act(torch.tensor(obs).unsqueeze(0))
+
+                obs_torch = torch.tensor(obs)
+                obs = obs_normalizer.normalize_obs(obs_torch).numpy()[0]
+                norm_obs_stack = np.concatenate(
+                    [obs, norm_obs_stack[:47*(5-1)]],
+                axis=-1
+                    )
+                torch_norm_obs = torch.tensor(norm_obs_stack, dtype=torch.float32).unsqueeze(0)
+
+                dist = model.act(torch_norm_obs)
                 actions[:] = dist.loc.detach().numpy()
                 actions[:] = np.clip(actions, -cfg["normalization"]["clip_actions"], cfg["normalization"]["clip_actions"])
                 dof_targets[:] = default_dof_pos + cfg["control"]["action_scale"] * actions

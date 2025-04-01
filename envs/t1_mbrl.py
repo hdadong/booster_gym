@@ -12,6 +12,7 @@ from isaacgym.torch_utils import (
 )
 
 assert gymtorch
+from collections import deque
 
 import torch
 
@@ -36,6 +37,50 @@ class T1_MBRL(BaseTask):
         self._init_buffers()
         self._prepare_reward_function()
 
+
+        self.obs_limit_min = torch.full((1, 56), -1.0, device=self.device)  # Min values
+        self.obs_limit_max = torch.full((1, 56), 1.0, device=self.device)   # Max values
+
+
+        indice_angvel = [i for i in range(3, 6, 1)]
+        self.obs_limit_min[:, indice_angvel] = torch.tensor([-2.0, -2.0, -2.0], device=self.device) # TODO
+        self.obs_limit_max[:, indice_angvel] = torch.tensor([2.0, 2.0, 2.0], device=self.device) # TODO
+
+        indice_dof_pos = [i for i in range(11, 23, 1)]
+        self.obs_limit_min[:, indice_dof_pos] = torch.tensor([-1.8, -0.3, -1.0, 0.0, -0.87, -0.44, -1.8, -1.57, -1.0, 0.0, -0.87, -0.44], device=self.device)
+        self.obs_limit_max[:, indice_dof_pos] = torch.tensor([1.57, 1.57, 1.0, 2.34, 0.35, 0.44, 1.57, 0.3, 1.0, 2.34, 0.35, 0.44], device=self.device)
+
+        indice_dof_vel = [i for i in range(23, 35, 1)]
+        self.obs_limit_min[:, indice_dof_vel] = torch.tensor([-12.5, -10.9, -10.9, -11.7, -18.8, -12.4, -12.5, -10.9, -10.9, -11.7, -18.8, -12.4], device=self.device)
+        self.obs_limit_max[:, indice_dof_vel] = torch.tensor([12.5, 10.9, 10.9, 11.7, 18.8, 12.4, 12.5, 10.9, 10.9, 11.7, 18.8, 12.4], device=self.device)
+
+        indice_last_action = [i for i in range(35, 47, 1)]
+        self.obs_limit_min[:, indice_last_action] = torch.tensor([-1.8, -0.3, -1.0, 0.0, -0.87, -0.44, -1.8, -1.57, -1.0, 0.0, -0.87, -0.44], device=self.device)
+        self.obs_limit_max[:, indice_last_action] = torch.tensor([1.57, 1.57, 1.0, 2.34, 0.35, 0.44, 1.57, 0.3, 1.0, 2.34, 0.35, 0.44], device=self.device)
+
+
+        indice_linvel = [i for i in range(47, 50, 1)]
+        self.obs_limit_min[:, indice_linvel] = torch.tensor([-1.5, -1.5, -0.5], device=self.device) # TODO
+        self.obs_limit_max[:, indice_linvel] = torch.tensor([1.5, 1.5, 0.5], device=self.device) # TODO
+
+        indice_height = 50
+        self.obs_limit_min[:, indice_height] = 0.0
+        self.obs_limit_max[:, indice_height] = 0.8
+
+        indice_eulerxyz = [i for i in range(51, 54, 1)]
+        self.obs_limit_min[:, indice_eulerxyz] = torch.tensor([-3.14, -3.14, -3.14], device=self.device) # TODO
+        self.obs_limit_max[:, indice_eulerxyz] = torch.tensor([3.14, 3.14, 3.14], device=self.device) # TODO
+
+
+    def normalize_obs(self, obs):
+        # Normalize observation
+        normalized_obs = 2 * (obs - self.obs_limit_min) / (self.obs_limit_max - self.obs_limit_min) - 1
+        return normalized_obs
+
+    def denormalize_obs(self, normalize_obs):
+        obs = (normalize_obs + 1)*(self.obs_limit_max - self.obs_limit_min)/2 + self.obs_limit_min
+        return obs
+    
     def _create_envs(self):
         self.num_envs = self.cfg["env"]["num_envs"]
         asset_cfg = self.cfg["asset"]
@@ -202,6 +247,16 @@ class T1_MBRL(BaseTask):
         self.reset_buf = torch.ones(self.num_envs, dtype=torch.bool, device=self.device)
         self.episode_length_buf = torch.zeros(self.num_envs, device=self.device, dtype=torch.long)
         self.time_out_buf = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
+        self.obs_history = deque(maxlen=self.cfg["env"]["obs_frame_stack"]) 
+        self.pri_obs_history = deque(maxlen=self.cfg["env"]["pri_obs_frame_stack"]) 
+        for _ in range(self.cfg["env"]["obs_frame_stack"]):
+            self.obs_history.append(torch.zeros(
+                self.num_envs, self.num_obs, dtype=torch.float, device=self.device))
+            
+        for _ in range(self.cfg["env"]["pri_obs_frame_stack"]):
+            self.pri_obs_history.append(torch.zeros(
+                self.num_envs, self.num_privileged_obs, dtype=torch.float, device=self.device))
+            
         self.extras = {}
         self.extras["rew_terms"] = {}
 
@@ -312,6 +367,12 @@ class T1_MBRL(BaseTask):
         self._update_curriculum(env_ids)
         self._reset_dofs(env_ids)
         self._reset_root_states(env_ids)
+
+        for i in range(self.obs_history.maxlen):
+            self.obs_history[i][env_ids] *= 0
+
+        for i in range(self.pri_obs_history.maxlen):
+            self.pri_obs_history[i][env_ids] *= 0
 
         self.last_dof_targets[env_ids] = self.dof_pos[env_ids]
         self.last_root_vel[env_ids] = self.root_states[env_ids, 7:13]
@@ -565,7 +626,7 @@ class T1_MBRL(BaseTask):
     def _check_termination(self):
         """Check if environments need to be reset"""
         self.reset_buf = torch.any(torch.norm(self.contact_forces[:, self.termination_contact_indices, :], dim=-1) > 1.0, dim=1)
-        self.reset_buf |= self.root_states[:, 7:13].square().sum(dim=-1) > self.cfg["rewards"]["terminate_vel"]
+        #self.reset_buf |= self.root_states[:, 7:13].square().sum(dim=-1) > self.cfg["rewards"]["terminate_vel"]
         self.reset_buf |= self.base_pos[:, 2] - self.terrain.terrain_heights(self.base_pos) < self.cfg["rewards"]["terminate_height"]
         self.time_out_buf = self.episode_length_buf > np.ceil(self.cfg["rewards"]["episode_length_s"] / self.dt)
         self.reset_buf |= self.time_out_buf
@@ -591,7 +652,7 @@ class T1_MBRL(BaseTask):
             [self.cfg["normalization"]["lin_vel"], self.cfg["normalization"]["lin_vel"], self.cfg["normalization"]["ang_vel"]],
             device=self.device,
         )
-        self.obs_buf = torch.cat(
+        obs_buf = torch.cat(
             (
                 apply_randomization(self.projected_gravity, self.cfg["noise"].get("gravity")) * self.cfg["normalization"]["gravity"],
                 apply_randomization(self.base_ang_vel, self.cfg["noise"].get("ang_vel")) * self.cfg["normalization"]["ang_vel"],
@@ -604,9 +665,19 @@ class T1_MBRL(BaseTask):
             ),
             dim=-1,
         )
-        self.privileged_obs_buf = torch.cat(
+        self.obs_history.append(obs_buf)
+
+
+        obs_buf_all = torch.stack([self.obs_history[i]
+                                   for i in range(self.obs_history.maxlen-1, -1 , -1)], dim=1)  # N,T,K
+
+        self.obs_buf = obs_buf_all.reshape(self.num_envs, -1)  # N, T*K
+        
+
+        privileged_obs_buf = torch.cat(
             (
-                self.base_mass_scaled,
+                obs_buf,
+                # self.base_mass_scaled,
                 apply_randomization(self.base_lin_vel, self.cfg["noise"].get("lin_vel")) * self.cfg["normalization"]["lin_vel"],
                 apply_randomization(self.base_pos[:, 2] - self.terrain.terrain_heights(self.base_pos), self.cfg["noise"].get("height")).unsqueeze(-1),
                 (apply_randomization(self.base_euler_xyz, self.cfg["noise"].get("euler")) + torch.pi) % (2 * torch.pi) - torch.pi,
@@ -615,6 +686,17 @@ class T1_MBRL(BaseTask):
             ),
             dim=-1,
         )
+        normalized_obs = self.normalize_obs(privileged_obs_buf)
+
+        self.pri_obs_history.append(normalized_obs)
+
+
+        pri_obs_buf_all = torch.stack([self.pri_obs_history[i]
+                                   for i in range(self.pri_obs_history.maxlen-1, -1 , -1)], dim=1)  # N,T,K
+
+        self.privileged_obs_buf = pri_obs_buf_all.reshape(self.num_envs, -1)  # N, T*K
+        
+        
         self.extras["privileged_obs"] = self.privileged_obs_buf
 
     # ------------ reward functions----------------

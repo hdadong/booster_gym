@@ -25,7 +25,7 @@ class ExperienceBuffer:
 
 
         if "last_obs_all" in npz_data.keys():
-            self.tensor_dict["last_obs_all"] = torch.tensor(npz_data['last_obs_all'], device=self.device)
+            self.tensor_dict["last_obses_all"] = torch.tensor(npz_data['last_obs_all'], device=self.device)
         else:
             self.tensor_dict["last_obses"] = torch.tensor(npz_data['last_observations'], device=self.device)
             self.tensor_dict["last_pri_obses"] = torch.tensor(npz_data['last_pri_observations'], device=self.device)

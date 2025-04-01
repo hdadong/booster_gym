@@ -97,7 +97,7 @@ To start training a policy, run the following command:
 
 $ python play_mbrl_train_policy.py --task=T1_MBRL
 
-$ python play_mbrl_collect_data.py --task=T1_MBRL
+$ python play_mbrl_collect_data.py --task=T1_MBRL --headless=True
 
 ```
 
@@ -109,7 +109,7 @@ To start training a policy, run the following command:
 
 $ python play_ppobaseline_train_policy.py --task=T1_MBRL_baseline --sim_device=cuda:1 --rl_device=cuda:1
 
-$ python play_ppobaseline_collect_data.py --task=T1_MBRL_baseline --sim_device=cuda:1 --rl_device=cuda:1
+$ python play_ppobaseline_collect_data.py --task=T1_MBRL_baseline --headless --sim_device=cuda:1 --rl_device=cuda:1
 
 
 
