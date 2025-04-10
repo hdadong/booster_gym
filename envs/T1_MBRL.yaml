@@ -92,8 +92,8 @@ init_state:
   default_joint_angles: {"Hip_Pitch": -0.2, "Knee_Pitch": 0.4, "Ankle_Pitch": -0.25, "default": 0.} # target angles when action = 0.0
 
 control:
-  stiffness: {"Hip": 200., "Knee": 200.,  "Ankle_Pitch": 15., "Ankle_Roll": 50.} # [N*m/rad]
-  damping: {"Hip": 5., "Knee": 5.,  "Ankle_Pitch": 0.5, "Ankle_Roll": 1.} # [N*m*s/rad]
+  stiffness: {"Hip": 200., "Knee": 200.,  "Ankle_Pitch": 50., "Ankle_Roll": 50.} # [N*m/rad]
+  damping: {"Hip": 5., "Knee": 5.,  "Ankle_Pitch": 1.0, "Ankle_Roll": 1.0} # [N*m*s/rad]
   action_scale: 1.
   decimation: 10
 
@@ -283,7 +283,7 @@ rewards:
   episode_length_s: 30.
   terminate_height: 0.45
   terminate_vel: 50.
-  terminate_contacts_on: []
+  terminate_contacts_on: ["Trunk", "H1", "H2", "AL", "AR", "Waist", "Hip", "Shank", "Ankle"]
   penalize_contacts_on: ["Trunk", "H1", "H2", "AL", "AR", "Waist", "Hip", "Shank", "Ankle"]
   only_positive_rewards: true # if true negative total rewards are clipped at zero (avoids early termination problems)
   tracking_sigma: 0.25 # tracking reward = exp(-error^2/sigma)
