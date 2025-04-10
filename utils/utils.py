@@ -39,7 +39,7 @@ def discount_values(rewards, dones, values, last_values, gamma, lam):
             next_values = last_values
         else:
             next_values = values[t + 1, :]
-        delta = rewards[t, :]*next_nonterminal + gamma * next_nonterminal * next_values - values[t, :]*next_nonterminal # TODO: check the rewards done
+        delta = rewards[t, :] + gamma * next_nonterminal * next_values - values[t, :] # TODO: check the rewards done
         advantages[t, :] = last_advantage = delta + gamma * lam * next_nonterminal * last_advantage
     return advantages
 

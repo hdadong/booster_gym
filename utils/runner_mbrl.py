@@ -159,8 +159,8 @@ class Runner:
 
             self.buffer.load_data(npz_file=data_dir)
             with torch.no_grad():
-                old_dist = self.model.act(self.buffer["obses"][self.buffer["dones"]==False])
-                old_actions_log_prob = old_dist.log_prob(self.buffer["actions"][self.buffer["dones"]==False]).sum(dim=-1)
+                old_dist = self.model.act(self.buffer["obses"])
+                old_actions_log_prob = old_dist.log_prob(self.buffer["actions"]).sum(dim=-1)
 
             mean_value_loss = 0
             mean_actor_loss = 0
@@ -184,12 +184,11 @@ class Runner:
                     advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
                 print(values.shape, returns.shape, advantages.shape)
                 # not use the done=true data to calculate the value loss, actor loss, bound loss, entropy
-                print(values[self.buffer["dones"]==False].shape)
-                value_loss = F.mse_loss(values[self.buffer["dones"]==False], returns[self.buffer["dones"]==False])
+                value_loss = F.mse_loss(values, returns)
                 # not use the done=true data to calculate the actor loss, bound loss, entropy
-                dist = self.model.act(self.buffer["obses"][self.buffer["dones"]==False])
-                actions_log_prob = dist.log_prob(self.buffer["actions"][self.buffer["dones"]==False]).sum(dim=-1)
-                actor_loss = surrogate_loss(old_actions_log_prob, actions_log_prob, advantages[self.buffer["dones"]==False])
+                dist = self.model.act(self.buffer["obses"])
+                actions_log_prob = dist.log_prob(self.buffer["actions"]).sum(dim=-1)
+                actor_loss = surrogate_loss(old_actions_log_prob, actions_log_prob, advantages)
 
                 bound_loss = torch.clip(dist.loc - 1.0, min=0.0).square().mean() + torch.clip(dist.loc + 1.0, max=0.0).square().mean()
 
@@ -208,7 +207,7 @@ class Runner:
                 self.optimizer.step()
 
                 with torch.no_grad():
-                    dist = self.model.act(self.buffer["obses"][self.buffer["dones"]==False])
+                    dist = self.model.act(self.buffer["obses"])
                     kl = torch.sum(
                         torch.log(dist.scale / old_dist.scale)
                         + 0.5 * (torch.square(old_dist.scale) + torch.square(dist.loc - old_dist.loc)) / torch.square(dist.scale)
