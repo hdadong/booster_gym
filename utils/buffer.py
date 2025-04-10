@@ -24,14 +24,15 @@ class ExperienceBuffer:
         self.tensor_dict["rewards"] = torch.tensor(npz_data['rewards'], device=self.device)
 
 
-        if "last_obs_all" in npz_data.keys():
-            self.tensor_dict["last_obs_all"] = torch.tensor(npz_data['last_obs_all'], device=self.device)
+        if "last_obses_all" in npz_data.keys():
+            self.tensor_dict["last_obses_all"] = torch.tensor(npz_data['last_obses_all'], device=self.device)
         else:
             self.tensor_dict["last_obses"] = torch.tensor(npz_data['last_observations'], device=self.device)
             self.tensor_dict["last_pri_obses"] = torch.tensor(npz_data['last_pri_observations'], device=self.device)
 
         self.tensor_dict["dones"] = torch.tensor(npz_data['dones'], device=self.device)
-        self.tensor_dict["time_outs"] = torch.tensor(npz_data['timeouts'], device=self.device)
+        if "timeouts" in npz_data.keys():
+            self.tensor_dict["time_outs"] = torch.tensor(npz_data['timeouts'], device=self.device)
         
 
     def __len__(self):

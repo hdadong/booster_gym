@@ -7,7 +7,7 @@ class ActorCritic(torch.nn.Module):
     def __init__(self, num_act, num_obs, num_privileged_obs):
         super().__init__()
         self.critic = torch.nn.Sequential(
-            torch.nn.Linear(num_obs + num_privileged_obs, 256),
+            torch.nn.Linear(num_privileged_obs, 256),
             torch.nn.SiLU(),
             torch.nn.Linear(256, 256),
             torch.nn.SiLU(),
@@ -15,19 +15,6 @@ class ActorCritic(torch.nn.Module):
             torch.nn.SiLU(),
             torch.nn.Linear(128, 1),
         )
-        # 47 512
-        # 512 256
-        # 256 128
-        # 128 10
-
-        # 47, 256
-        # 256, 256
-        # 256, 128
-        # 128, 1
-
-        #256, 256
-
-        #[256, 256, 128]
         self.actor = torch.nn.Sequential(
             torch.nn.Linear(num_obs, 256),
             torch.nn.SiLU(),
@@ -44,6 +31,9 @@ class ActorCritic(torch.nn.Module):
         action_std = torch.exp(self.logstd).expand_as(action_mean)
         return torch.distributions.Normal(action_mean, action_std)
 
+    def est_value_all(self, obs_privileged_obs):
+        return self.critic(obs_privileged_obs).squeeze(-1)
+    
     def est_value(self, obs, privileged_obs):
         critic_input = torch.cat((obs, privileged_obs), dim=-1)
         return self.critic(critic_input).squeeze(-1)

@@ -12,10 +12,11 @@ basic:
 env:
   num_envs: 400
   num_observations: 47
-  num_privileged_obs: 13
+  num_privileged_obs: 60
   num_actions: 12
   env_spacing: 1.  # not used with plane terrain
-
+  obs_frame_stack: 5
+  pri_obs_frame_stack: 5
 runner:
   horizon_length: 24
   mini_epochs: 2
@@ -91,13 +92,13 @@ init_state:
   default_joint_angles: {"Hip_Pitch": -0.2, "Knee_Pitch": 0.4, "Ankle_Pitch": -0.25, "default": 0.} # target angles when action = 0.0
 
 control:
-  stiffness: {"Hip": 200., "Knee": 200., "Ankle": 50.} # [N*m/rad]
-  damping: {"Hip": 5., "Knee": 5., "Ankle": 1.} # [N*m*s/rad]
+  stiffness: {"Hip": 200., "Knee": 200.,  "Ankle_Pitch": 15., "Ankle_Roll": 50.} # [N*m/rad]
+  damping: {"Hip": 5., "Knee": 5.,  "Ankle_Pitch": 0.5, "Ankle_Roll": 1.} # [N*m*s/rad]
   action_scale: 1.
   decimation: 10
 
 terrain:
-  type: "trimesh" # "plane" or "trimesh"
+  type: "plane" # "plane" or "trimesh"
   static_friction: 1.0  # [-]
   dynamic_friction: 1.0  # [-]
   restitution: 0.        # [-]
@@ -116,12 +117,12 @@ terrain:
 
 commands:
   num_commands: 3 # default: lin_vel_x, lin_vel_y, ang_vel_yaw
-  still_proportion: 0.1
-  lin_vel_x: [-1.0, 1.0] # min max [m/s]
-  lin_vel_y: [-1.0, 1.0] # min max [m/s]
-  ang_vel_yaw: [-1, 1]   # min max [rad/s]
+  still_proportion: 1.0
+  lin_vel_x: [0.0, 0.0] # min max [m/s]
+  lin_vel_y: [-0.0, 0.0] # min max [m/s]
+  ang_vel_yaw: [-0, 0]   # min max [rad/s]
   resampling_time_s: [8., 12.]
-  gait_frequency: [1.0, 2.0] # min max [Hz]
+  gait_frequency: [1.0, 1.0] # min max [Hz]
   # curriculum only:
   curriculum: false
   update_rate: 0.1
@@ -148,31 +149,31 @@ normalization:
 
 noise:
   gravity:
-    range: [0., 0.01]
+    range: [0., 0.0]
     operation: "additive"
     distribution: "gaussian"
   euler:
-    range: [0., 0.03]
+    range: [0., 0.0]
     operation: "additive"
     distribution: "gaussian"
   lin_vel:
-    range: [0., 0.05]
+    range: [0., 0.0]
     operation: "additive"
     distribution: "gaussian"
   ang_vel:
-    range: [0., 0.1]
+    range: [0., 0.0]
     operation: "additive"
     distribution: "gaussian"
   dof_pos:
-    range: [0., 0.01]
+    range: [0., 0.0]
     operation: "additive"
     distribution: "gaussian"
   dof_vel:
-    range: [0., 0.1]
+    range: [0., 0.0]
     operation: "additive"
     distribution: "gaussian"
   height:
-    range: [0., 0.02]
+    range: [0., 0.0]
     operation: "additive"
     distribution: "gaussian"
 
@@ -186,37 +187,37 @@ randomization:
     operation: "additive"
     distribution: "uniform"
   init_base_lin_vel_xy:
-    range: [0., 0.1]
+    range: [0., 0.01]
     operation: "additive"
     distribution: "gaussian"
 
   kick_interval_s: 2.
   kick_lin_vel:
-    range: [0., 0.1]
+    range: [0., 0.0]
     operation: "additive"
     distribution: "gaussian"
   kick_ang_vel:
-    range: [0., 0.02]
+    range: [0., 0.0]
     operation: "additive"
     distribution: "gaussian"
 
   push_interval_s: 5.
   push_duration_s: 1.
   push_force:
-    range: [0., 10.]
+    range: [0., 0.]
     operation: "additive"
     distribution: "gaussian"
   push_torque:
-    range: [0., 2.]
+    range: [0., 0.]
     operation: "additive"
     distribution: "gaussian"
 
   dof_stiffness:
-    range: [0.95, 1.05]
+    range: [1.0, 1.0]
     operation: "scaling"
     distribution: "uniform"
   dof_damping:
-    range: [0.95, 1.05]
+    range: [1.0, 1.0]
     operation: "scaling"
     distribution: "uniform"
   dof_friction:
@@ -225,32 +226,32 @@ randomization:
     distribution: "uniform"
 
   friction:
-    range: [0.1, 2.0]
+    range: [1.5, 1.5]
     operation: "additive"
     distribution: "uniform"
   compliance:
-    range: [0.5, 1.5]
+    range: [1.0, 1.0]
     operation: "additive"
     distribution: "uniform"
   restitution:
-    range: [0.1, 0.9]
+    range: [0.5, 0.5]
     operation: "additive"
     distribution: "uniform"
 
   base_com:
-    range: [-0.1, 0.1]
+    range: [0.0, 0.0]
     operation: "additive"
     distribution: "uniform"
   base_mass:
-    range: [0.8, 1.2]
+    range: [1.0, 1.0]
     operation: "scaling"
     distribution: "uniform"
   other_com:
-    range: [-0.005, 0.005]
+    range: [0.0, 0.0]
     operation: "additive"
     distribution: "uniform"
   other_mass:
-    range: [0.98, 1.02]
+    range: [1.0, 1.0]
     operation: "scaling"
     distribution: "uniform"
 

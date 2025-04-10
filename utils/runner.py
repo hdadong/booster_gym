@@ -143,6 +143,7 @@ class Runner:
                     )
                     returns = values + advantages
                     advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+                print(values.shape, returns.shape, advantages.shape)
                 value_loss = F.mse_loss(values, returns)
 
                 dist = self.model.act(self.buffer["obses"])

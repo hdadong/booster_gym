@@ -41,7 +41,7 @@ class Runner:
 
         self.device = self.cfg["basic"]["rl_device"]
         self.learning_rate = self.cfg["algorithm"]["learning_rate"]
-        self.model = ActorCritic(self.cfg["env"]["num_actions"], self.cfg["env"]["num_observations"], self.cfg["env"]["num_privileged_obs"]).to(self.device)
+        self.model = ActorCritic(self.cfg["env"]["num_actions"], self.cfg["env"]["num_observations"] * self.cfg["env"]["obs_frame_stack"], self.cfg["env"]["num_privileged_obs"]* self.cfg["env"]["pri_obs_frame_stack"]).to(self.device)
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.learning_rate)
         self._load()
 
@@ -99,13 +99,13 @@ class Runner:
             return
         if self.policy_path == None:
             if (self.cfg["basic"]["checkpoint"] == "-1") or (self.cfg["basic"]["checkpoint"] == -1):
-                self.cfg["basic"]["checkpoint"] = sorted(glob.glob(os.path.join("logs", "**/*.pth"), recursive=True), key=os.path.getmtime)[-1]
-            self.policy_path = self.cfg["basic"]["checkpoint"].split('/')[1]
-
+                newest_dir = sorted(glob.glob(os.path.join("logs", "*")), key=lambda x: x.split('/')[-1], reverse=True)[0]
+                self.cfg["basic"]["checkpoint"] = sorted(glob.glob(os.path.join(newest_dir, "**/*.pth"), recursive=True), key=os.path.getmtime)[-1]
+            self.policy_path = newest_dir.split('/')[1]
         else:
             if (self.cfg["basic"]["checkpoint"] == "-1") or (self.cfg["basic"]["checkpoint"] == -1):
                 self.cfg["basic"]["checkpoint"] = sorted(glob.glob(os.path.join("logs/"+self.policy_path+"/", "**/*.pth"), recursive=True), key=os.path.getmtime)[-1]
-
+        print("self.policy_path", self.policy_path)
         print("Loading model from {}".format(self.cfg["basic"]["checkpoint"]))
         model_dict = torch.load(self.cfg["basic"]["checkpoint"], map_location=self.device, weights_only=True)
         self.model.load_state_dict(model_dict["model"], strict=False)
@@ -121,17 +121,7 @@ class Runner:
         del model_dict
     def train(self):
         self.recorder = Recorder(self.cfg, name="policy_train")
-        generate_data_dir = self.cfg["basic"]["generate_data_dir"]
-        base_data_dir = self.cfg["basic"]["base_data_dir"]
 
-        # delete the old
-        if os.path.exists(generate_data_dir):
-            shutil.rmtree(generate_data_dir)
-        if os.path.exists(base_data_dir):
-            shutil.rmtree(base_data_dir)
-        # mkdir
-        os.makedirs(generate_data_dir, exist_ok=True)
-        os.makedirs(base_data_dir, exist_ok=True)
 
         self.recorder.save(
             {
@@ -141,9 +131,18 @@ class Runner:
             },
             0,
         )
+        self.cfg["basic"]["checkpoint"] = -1
+        self._load()
+        generate_data_dir = os.path.join("logs/", os.path.join(self.policy_path, 'generate_data'))
+        base_data_dir = os.path.join("logs/", os.path.join(self.policy_path, 'base_data_dir'))
+
+        os.makedirs(base_data_dir, exist_ok=True)
+        os.makedirs(generate_data_dir, exist_ok=True)
 
 
-        flag_policy_train = os.path.join(base_data_dir, 'flag_policy_train.flag')
+        flag_policy_train = os.path.join(os.path.join("logs/", self.policy_path), 'flag_policy_train.flag')
+
+
         processed_dirs = set()
     
 
@@ -159,40 +158,43 @@ class Runner:
 
 
             self.buffer.load_data(npz_file=data_dir)
-            old_dist_scale = self.buffer["std"]
-            old_dist_loc = self.buffer["mu"]
-
-            old_distribution = Normal(old_dist_loc, old_dist_loc*0. + torch.exp(old_dist_scale))
-            old_actions_log_prob = old_distribution.log_prob(self.buffer["actions"]).sum(dim=-1)
+            with torch.no_grad():
+                old_dist = self.model.act(self.buffer["obses"][self.buffer["dones"]==False])
+                old_actions_log_prob = old_dist.log_prob(self.buffer["actions"][self.buffer["dones"]==False]).sum(dim=-1)
 
             mean_value_loss = 0
             mean_actor_loss = 0
             mean_bound_loss = 0
             mean_entropy = 0
+            mean_kl = 0
             for n in range(self.cfg["runner"]["mini_epochs"]):
-                values = self.model.est_value(self.buffer["obses"], self.buffer["privileged_obses"])
-                last_values = self.buffer["last_values"]
+                values = self.model.est_value_all(self.buffer["privileged_obses"])
+                last_values = self.model.est_value_all(self.buffer["last_obses_all"])
+
                 with torch.no_grad():
-                    self.buffer["rewards"][self.buffer["dones"].to(dtype=torch.bool)] = values[self.buffer["dones"].to(dtype=torch.bool)]
                     advantages = discount_values(
                         self.buffer["rewards"],
                         self.buffer["dones"],
                         values,
-                        last_values.squeeze(1),
+                        last_values,
                         self.cfg["algorithm"]["gamma"],
                         self.cfg["algorithm"]["lam"],
                     )
                     returns = values + advantages
                     advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-                value_loss = F.mse_loss(values, returns)
-
-                dist = self.model.act(self.buffer["obses"])
-                actions_log_prob = dist.log_prob(self.buffer["actions"]).sum(dim=-1)
-                actor_loss = surrogate_loss(old_actions_log_prob, actions_log_prob, advantages)
+                print(values.shape, returns.shape, advantages.shape)
+                # not use the done=true data to calculate the value loss, actor loss, bound loss, entropy
+                print(values[self.buffer["dones"]==False].shape)
+                value_loss = F.mse_loss(values[self.buffer["dones"]==False], returns[self.buffer["dones"]==False])
+                # not use the done=true data to calculate the actor loss, bound loss, entropy
+                dist = self.model.act(self.buffer["obses"][self.buffer["dones"]==False])
+                actions_log_prob = dist.log_prob(self.buffer["actions"][self.buffer["dones"]==False]).sum(dim=-1)
+                actor_loss = surrogate_loss(old_actions_log_prob, actions_log_prob, advantages[self.buffer["dones"]==False])
 
                 bound_loss = torch.clip(dist.loc - 1.0, min=0.0).square().mean() + torch.clip(dist.loc + 1.0, max=0.0).square().mean()
 
                 entropy = dist.entropy().sum(dim=-1)
+
 
                 loss = (
                     value_loss
@@ -206,17 +208,23 @@ class Runner:
                 self.optimizer.step()
 
                 with torch.no_grad():
+                    dist = self.model.act(self.buffer["obses"][self.buffer["dones"]==False])
                     kl = torch.sum(
-                        torch.log(dist.scale / old_dist_scale) + 0.5 * (torch.square(old_dist_scale) + torch.square(dist.loc - old_dist_loc)) / torch.square(dist.scale) - 0.5,
+                        torch.log(dist.scale / old_dist.scale)
+                        + 0.5 * (torch.square(old_dist.scale) + torch.square(dist.loc - old_dist.loc)) / torch.square(dist.scale)
+                        - 0.5,
                         axis=-1,
                     )
                     kl_mean = torch.mean(kl)
-
-
-                    if kl_mean > self.cfg["algorithm"]["desired_kl"] * 2:
+                    mean_kl += kl_mean.item()
+                    if mean_kl > self.cfg["algorithm"]["desired_kl"] * 2:
+                        self.orignal_learning_rate = self.learning_rate
                         self.learning_rate = max(1e-5, self.learning_rate / 1.5)
-                    elif kl_mean < self.cfg["algorithm"]["desired_kl"] / 2:
+                        print(f"Reducing learning rate {self.orignal_learning_rate} to {self.learning_rate} due to high KL divergence: {mean_kl}")
+                    elif mean_kl < self.cfg["algorithm"]["desired_kl"] / 2:
+                        self.orignal_learning_rate = self.learning_rate
                         self.learning_rate = min(1e-2, self.learning_rate * 1.5)
+                        print(f"Increasing learning rate {self.orignal_learning_rate} to {self.learning_rate} due to low KL divergence: {mean_kl}")
                     for param_group in self.optimizer.param_groups:
                         param_group["lr"] = self.learning_rate
 
@@ -224,17 +232,21 @@ class Runner:
                 mean_actor_loss += actor_loss.item()
                 mean_bound_loss += bound_loss.item()
                 mean_entropy += entropy.mean()
+            
             mean_value_loss /= self.cfg["runner"]["mini_epochs"]
             mean_actor_loss /= self.cfg["runner"]["mini_epochs"]
             mean_bound_loss /= self.cfg["runner"]["mini_epochs"]
             mean_entropy /= self.cfg["runner"]["mini_epochs"]
+            mean_kl /= self.cfg["runner"]["mini_epochs"]
+            
+
             self.recorder.record_statistics(
                 {
                     "value_loss": mean_value_loss,
                     "actor_loss": mean_actor_loss,
                     "bound_loss": mean_bound_loss,
                     "entropy": mean_entropy,
-                    "kl_mean": kl_mean,
+                    "kl_mean": mean_kl,
                     "lr": self.learning_rate,
                 },
                 it,
@@ -255,10 +267,18 @@ class Runner:
             print("Train Done, delete flag and data, continue to generate data。")
 
     def play(self):
+        self.cfg["basic"]["checkpoint"] = -1
+        self._load()
+        base_data_dir = os.path.join("logs/", os.path.join(self.policy_path, 'base_data_dir'))
+        flag_model_train = os.path.join(os.path.join("logs/", self.policy_path), 'flag_model_train.flag')
+        while os.path.exists(flag_model_train):
+            time.sleep(3)  # 每隔10秒检查一次
+
+
         self.cfg["env"]["num_envs"] = 1
+
         self.env = self.task_class(self.cfg)
         plot_reward = False
-        base_data_dir = self.cfg["basic"]["base_data_dir"]
         max_total_steps = self.cfg["basic"]["max_total_steps"]
         num_envs = self.env.num_envs
         step_count = 0
@@ -269,10 +289,6 @@ class Runner:
         os.makedirs(data_dir, exist_ok=True)
         self.recorder = Recorder(self.cfg, name="collect_data", log_path="collect_data")
 
-        flag_model_train = os.path.join(base_data_dir, 'flag_model_train.flag')
-
-        while os.path.exists(flag_model_train):
-            time.sleep(3)  # 每隔10秒检查一次
 
 
         obs, infos = self.env.reset()
@@ -361,6 +377,8 @@ class Runner:
                         rewards=rewards_array,
                         timestamps=timestamps_array,
                     )
+                data_counts[env_id] += 1
+                step_count += episode_length_buf[env_id]
                 # 清空该环境的数据缓冲区
                 del obs_array, pri_obs_array, actions_array, torques_array, contacts_array, rewards_array, timestamps_array
                 data_buffers[env_id]['observations'].clear()
@@ -375,14 +393,12 @@ class Runner:
                         name = self.env.reward_names[i]
                         data_buffers[env_idx]['reward_' +name].clear()
                 data_buffers[env_id] = self.create_data_dict(plot_reward=plot_reward, reward_names=self.env.reward_names)
-                data_counts[env_id] += 1
 
                 # load npz and check the size of the data
                 npz_filename = os.path.join(
                     data_dir,
                     f'env_{env_id}_data_{data_counts[env_id]-1}.npz',
                 )
-                step_count += episode_length_buf[env_id]
                 
                 print("episode_length_buf[env_id]", episode_length_buf[env_id])
             
@@ -390,6 +406,14 @@ class Runner:
 
             if step_count > max_total_steps:# or episode_length_buf[env_id]!= 1000:
                 num_collect +=1
+
+                # TODO: reset the env for the new policy
+                # data_buffers = [self.create_data_dict(plot_reward=plot_reward, reward_names=self.env.reward_names) for _ in range(num_envs)]
+                # obs, infos = self.env.reset()
+                # obs = obs.to(self.device)
+                # obs_cpu = obs.cpu().numpy()
+                # pri_obs_cpu = infos["privileged_obs"].cpu().numpy()
+
 
                 step_count = 0
                 torch.cuda.empty_cache()
