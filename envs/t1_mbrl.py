@@ -260,6 +260,7 @@ class T1_MBRL(BaseTask):
         self.projected_gravity = quat_rotate_inverse(self.base_quat, self.gravity_vec)
         self.filtered_lin_vel = self.base_lin_vel.clone()
         self.filtered_ang_vel = self.base_ang_vel.clone()
+        self.filtered_dof_pos = self.dof_pos.clone()
         self.curriculum_prob = torch.zeros(
             1 + 2 * self.cfg["commands"]["lin_vel_levels"],
             1 + 2 * self.cfg["commands"]["ang_vel_levels"],
@@ -335,6 +336,7 @@ class T1_MBRL(BaseTask):
         self.episode_length_buf[env_ids] = 0
         self.filtered_lin_vel[env_ids] = 0.0
         self.filtered_ang_vel[env_ids] = 0.0
+        self.filtered_dof_pos[env_ids] = 0.0
         self.cmd_resample_time[env_ids] = 0
 
         self.delay_steps[env_ids] = torch.randint(0, self.cfg["control"]["decimation"], (len(env_ids),), device=self.device)
@@ -496,12 +498,16 @@ class T1_MBRL(BaseTask):
         self.base_ang_vel[:] = quat_rotate_inverse(self.base_quat, self.root_states[:, 10:13])
         self.projected_gravity[:] = quat_rotate_inverse(self.base_quat, self.gravity_vec)
         self.base_euler_xyz = get_euler_xyz_tensor(self.base_quat)
-        self.filtered_lin_vel[:] = self.base_lin_vel[:] * self.cfg["normalization"]["filter_weight"] + self.filtered_lin_vel[:] * (
-            1.0 - self.cfg["normalization"]["filter_weight"]
+        self.filtered_lin_vel[:] = self.base_lin_vel[:] * self.cfg["normalization"]["filter_lin_vel_weight"] + self.filtered_lin_vel[:] * (
+            1.0 - self.cfg["normalization"]["filter_lin_vel_weight"]
         )
-        self.filtered_ang_vel[:] = self.base_ang_vel[:] * self.cfg["normalization"]["filter_weight"] + self.filtered_ang_vel[:] * (
-            1.0 - self.cfg["normalization"]["filter_weight"]
+        self.filtered_ang_vel[:] = self.base_ang_vel[:] * self.cfg["normalization"]["filter_ang_vel_weight"] + self.filtered_ang_vel[:] * (
+            1.0 - self.cfg["normalization"]["filter_ang_vel_weight"]
         )
+        self.filtered_dof_pos[:] = self.dof_pos[:] * self.cfg["normalization"]["filter_dof_pos_weight"] + self.filtered_dof_pos[:] * (
+            1.0 - self.cfg["normalization"]["filter_dof_pos_weight"]
+        )
+
         self._refresh_feet_state()
 
         self.episode_length_buf += 1
@@ -615,7 +621,7 @@ class T1_MBRL(BaseTask):
                 self.commands[:, :3] * commands_scale,
                 (torch.cos(2 * torch.pi * self.gait_process) * (self.gait_frequency > 1.0e-8).float()).unsqueeze(-1),
                 (torch.sin(2 * torch.pi * self.gait_process) * (self.gait_frequency > 1.0e-8).float()).unsqueeze(-1),
-                apply_randomization(self.dof_pos - self.default_dof_pos, self.cfg["noise"].get("dof_pos")) * self.cfg["normalization"]["dof_pos"],
+                apply_randomization(self.filtered_dof_pos - self.default_dof_pos, self.cfg["noise"].get("dof_pos")) * self.cfg["normalization"]["dof_pos"],
                 apply_randomization(self.dof_vel, self.cfg["noise"].get("dof_vel")) * self.cfg["normalization"]["dof_vel"],
                 self.actions,
             ),
