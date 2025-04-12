@@ -20,6 +20,15 @@ from datetime import datetime
 from torch.distributions import Normal
 
 
+def _get_symmetry_matrix(mirrored):
+    numel = len(mirrored)
+    mat = np.zeros((numel, numel))
+
+    for (i, j) in zip(np.arange(numel), np.abs(np.array(mirrored).astype(int))):
+        mat[i, j] = np.sign(mirrored[i])
+
+    return mat
+
 def get_latest_data_dir(base_data_dir, processed_dirs):
     data_dirs = [d for d in os.listdir(base_data_dir) if d.startswith('data_') and d not in processed_dirs]
     if not data_dirs:
@@ -54,6 +63,55 @@ class Runner:
         self.buffer.add_buffer("time_outs", (), dtype=bool)
 
 
+        base_mir_obs = [
+            0.1, -1, 2, # gravity
+            -3, 4, -5, # ang vel
+            6, -7, -8, # command
+            9, 10, # cos, sin
+            -17, -18, 19, 20, 21, -22, # pos
+            -11, -12, 13, 14, 15, -16, # pos
+            -29, -30, 31, 32, 33, -34, # vel
+            -23, -24, 25, 26, 27, -28, # vel
+            -41, -42, 43, 44, 45, -46, # action
+            -35, -36, 37, 38, 39, -40, # action
+        ]
+
+        self.clock_inds = [9, 10]
+        self.mirrored_obs = np.array(base_mir_obs, copy=True).tolist()
+        self.mirrored_act = [-6, -7, 8, 9, 10, -11,
+                            -0.1, -1, 2, 3, 4, -5]
+        self.obs_mirror_matrix = torch.tensor(_get_symmetry_matrix(self.mirrored_obs), device=self.device, dtype=torch.float32)
+        self.act_mirror_matrix = torch.tensor(_get_symmetry_matrix(self.mirrored_act), device=self.device, dtype=torch.float32)
+        
+  
+    def mirror_action(self, action):
+        return action @ self.act_mirror_matrix
+
+
+    # To be used when there is a clock in the observation. In this case, the mirrored_obs vector inputted
+    # when the SymmeticEnv is created should not move the clock input order. The indices of the obs vector
+    # where the clocks are located need to be inputted.
+    def mirror_observation(self, obs):
+        # print("obs.shape = ", obs.shape)
+        # print("obs_mirror_matrix.shape = ", self.obs_mirror_matrix.shape)
+        mirror_obs_batch = torch.zeros_like(obs, device=self.device)
+        history_len = self.cfg["env"]["obs_frame_stack"] # FIX HISTORY-OF-STATES LENGTH TO 1 FOR NOW
+        num_single_obs = self.cfg["env"]["num_observations"]
+        for block in range(history_len):
+            obs_ = obs[:, num_single_obs*block : num_single_obs*(block+1)]
+            obs_ = self.denormalize_obs(obs_)
+            # denormalize
+            
+            mirror_obs = obs_ @ self.obs_mirror_matrix
+            clock = mirror_obs[:, self.clock_inds]
+
+            for i in range(np.shape(clock)[1]):
+                # TODO: 需要修改: 需要修改
+                mirror_obs[:, int(self.clock_inds[i])] = torch.zeros_like(clock[:, i], device=self.device)#torch.sin(torch.arcsin(clock[:, i]) + torch.pi)
+            
+            mirror_obs = self.normalize_obs(mirror_obs)
+            mirror_obs_batch[:, num_single_obs*block : num_single_obs*(block+1)] = mirror_obs
+        return mirror_obs_batch
 
 
     def _get_args(self):
@@ -162,6 +220,7 @@ class Runner:
                 old_dist = self.model.act(self.buffer["obses"])
                 old_actions_log_prob = old_dist.log_prob(self.buffer["actions"]).sum(dim=-1)
 
+            mean_mirror_loss = 0
             mean_value_loss = 0
             mean_actor_loss = 0
             mean_bound_loss = 0
@@ -195,8 +254,17 @@ class Runner:
                 entropy = dist.entropy().sum(dim=-1)
 
 
+                if self.mirror_observation is not None and self.mirror_action is not None:
+                    deterministic_actions = self.model.act(self.buffer["obses"]).loc  
+                    mir_obs = self.mirror_observation(self.buffer["obses"])
+                    mirror_actions = self.model.act(mir_obs).loc
+                    mirror_actions = self.mirror_action(mirror_actions)
+                    mirror_loss = (deterministic_actions - mirror_actions).pow(2).mean()
+                            
+
                 loss = (
                     value_loss
+                    + mirror_loss * 0.1
                     + actor_loss
                     + self.cfg["algorithm"]["bound_coef"] * bound_loss
                     + self.cfg["algorithm"]["entropy_coef"] * entropy.mean()
@@ -231,16 +299,19 @@ class Runner:
                 mean_actor_loss += actor_loss.item()
                 mean_bound_loss += bound_loss.item()
                 mean_entropy += entropy.mean()
+                mean_mirror_loss += mirror_loss.item()
             
             mean_value_loss /= self.cfg["runner"]["mini_epochs"]
             mean_actor_loss /= self.cfg["runner"]["mini_epochs"]
             mean_bound_loss /= self.cfg["runner"]["mini_epochs"]
             mean_entropy /= self.cfg["runner"]["mini_epochs"]
+            mean_mirror_loss /= self.cfg["runner"]["mini_epochs"]
             mean_kl /= self.cfg["runner"]["mini_epochs"]
             
 
             self.recorder.record_statistics(
                 {
+                    "mirror_loss": mean_mirror_loss,
                     "value_loss": mean_value_loss,
                     "actor_loss": mean_actor_loss,
                     "bound_loss": mean_bound_loss,
