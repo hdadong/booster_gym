@@ -103,7 +103,7 @@ class Runner:
             mirror_obs = obs_ @ self.obs_mirror_matrix
             clock = mirror_obs[:, :, self.clock_inds]
 
-            for i in range(np.shape(clock)[1]):
+            for i in range(np.shape(clock)[2]):
                 # TODO: 需要修改: 需要修改
                 # check  clock[:, i] is zero or not
                 assert torch.all(clock[:, :, i] == 0), "clock[:, i] is not zero"
