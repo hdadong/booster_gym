@@ -107,6 +107,8 @@ class Runner:
 
             for i in range(np.shape(clock)[1]):
                 # TODO: 需要修改: 需要修改
+                # check  clock[:, i] is zero or not
+                assert torch.all(clock[:, i] == 0), "clock[:, i] is not zero"
                 mirror_obs[:, int(self.clock_inds[i])] = torch.zeros_like(clock[:, i], device=self.device)#torch.sin(torch.arcsin(clock[:, i]) + torch.pi)
             
             mirror_obs = self.normalize_obs(mirror_obs)
