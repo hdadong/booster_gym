@@ -98,18 +98,18 @@ class Runner:
         history_len = self.cfg["env"]["obs_frame_stack"] # FIX HISTORY-OF-STATES LENGTH TO 1 FOR NOW
         num_single_obs = self.cfg["env"]["num_observations"]
         for block in range(history_len):
-            obs_ = obs[:, num_single_obs*block : num_single_obs*(block+1)]
+            obs_ = obs[:, :, num_single_obs*block : num_single_obs*(block+1)]
             
             mirror_obs = obs_ @ self.obs_mirror_matrix
-            clock = mirror_obs[:, self.clock_inds]
+            clock = mirror_obs[:, :, self.clock_inds]
 
             for i in range(np.shape(clock)[1]):
                 # TODO: 需要修改: 需要修改
                 # check  clock[:, i] is zero or not
-                assert torch.all(clock[:, i] == 0), "clock[:, i] is not zero"
-                mirror_obs[:, int(self.clock_inds[i])] = torch.zeros_like(clock[:, i], device=self.device)#torch.sin(torch.arcsin(clock[:, i]) + torch.pi)
+                assert torch.all(clock[:, :, i] == 0), "clock[:, i] is not zero"
+                mirror_obs[:, :, int(self.clock_inds[i])] = torch.zeros_like(clock[:, :, i], device=self.device)#torch.sin(torch.arcsin(clock[:, i]) + torch.pi)
             
-            mirror_obs_batch[:, num_single_obs*block : num_single_obs*(block+1)] = mirror_obs
+            mirror_obs_batch[:, :, num_single_obs*block : num_single_obs*(block+1)] = mirror_obs
         return mirror_obs_batch
 
 
