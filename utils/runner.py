@@ -143,7 +143,6 @@ class Runner:
                     )
                     returns = values + advantages
                     advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-                print(values.shape, returns.shape, advantages.shape)
                 value_loss = F.mse_loss(values, returns)
 
                 dist = self.model.act(self.buffer["obses"])
@@ -166,6 +165,7 @@ class Runner:
                 self.optimizer.step()
 
                 with torch.no_grad():
+                    dist = self.model.act(self.buffer["obses"])
                     kl = torch.sum(
                         torch.log(dist.scale / old_dist.scale)
                         + 0.5 * (torch.square(old_dist.scale) + torch.square(dist.loc - old_dist.loc)) / torch.square(dist.scale)
