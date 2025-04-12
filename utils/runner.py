@@ -165,6 +165,7 @@ class Runner:
                 self.optimizer.step()
 
                 with torch.no_grad():
+                    dist = self.model.act(self.buffer["obses"])
                     kl = torch.sum(
                         torch.log(dist.scale / old_dist.scale)
                         + 0.5 * (torch.square(old_dist.scale) + torch.square(dist.loc - old_dist.loc)) / torch.square(dist.scale)
