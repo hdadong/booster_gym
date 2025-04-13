@@ -204,7 +204,7 @@ class Runner:
                     old_sigma_batch = old_sigma.reshape(-1, old_sigma.shape[-1])[batch_idx]
                     # current policy distribution
                     dist = self.model.act(obs_batch)
-                    value = self.model.est_value(obs_batch, pri_obs_batch)
+                    value = self.model.est_value_all(pri_obs_batch)
 
                     # loss
                     new_log_prob = dist.log_prob(actions_batch).sum(dim=-1)
