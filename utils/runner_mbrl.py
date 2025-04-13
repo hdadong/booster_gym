@@ -169,10 +169,10 @@ class Runner:
                 )
                 advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
-            old_dist = self.model.act(self.buffer["obses"])
-            old_mu = old_dist.loc
-            old_sigma = old_dist.scale
-            old_log_prob = old_dist.log_prob(self.buffer["actions"]).sum(dim=-1)
+                old_dist = self.model.act(self.buffer["obses"])
+                old_mu = old_dist.loc
+                old_sigma = old_dist.scale
+                old_log_prob = old_dist.log_prob(self.buffer["actions"]).sum(dim=-1)
 
             obs = self.buffer["obses"]
             pri_obs = self.buffer["privileged_obses"]
@@ -226,13 +226,14 @@ class Runner:
                     loss.backward()
                     torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
                     self.optimizer.step()
+
                     with torch.no_grad():
-                        dist = self.model.act(obs_batch)
+                        new_dist = self.model.act(obs_batch)
 
                         eps = 1e-6
                         kl = torch.sum(
-                            torch.log((dist.scale + eps) / (old_sigma_batch + eps))
-                            + 0.5 * (torch.square(old_sigma_batch) + torch.square(dist.loc - old_mu_batch)) / (torch.square(dist.scale) + eps)
+                            torch.log((new_dist.scale + eps) / (old_sigma_batch + eps))
+                            + 0.5 * (torch.square(old_sigma_batch) + torch.square(new_dist.loc - old_mu_batch)) / (torch.square(new_dist.scale) + eps)
                             - 0.5,
                             axis=-1,
                         )
