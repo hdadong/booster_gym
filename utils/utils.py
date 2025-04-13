@@ -43,6 +43,21 @@ def discount_values(rewards, dones, values, last_values, gamma, lam):
         advantages[t, :] = last_advantage = delta + gamma * lam * next_nonterminal * last_advantage
     return advantages
 
+def compute_returns_advantages(rewards, dones, values, last_values, gamma, lam):
+    advantages = torch.zeros_like(rewards)
+    returns = torch.zeros_like(rewards)
+    last_adv = torch.zeros_like(rewards[-1])
+    for t in reversed(range(rewards.shape[0])):
+        nonterminal = 1.0 - dones[t].float()
+        if t == rewards.shape[0] - 1:
+            next_value = last_values
+        else:
+            next_value = values[t + 1]
+        delta = rewards[t] + gamma * nonterminal * next_value - values[t]
+        last_adv = delta + gamma * lam * nonterminal * last_adv
+        advantages[t] = last_adv
+        returns[t] = advantages[t] + values[t]
+    return returns, advantages
 
 def surrogate_loss(old_actions_log_prob, actions_log_prob, advantages, e_clip=0.2):
     ratio = torch.exp(actions_log_prob - old_actions_log_prob)

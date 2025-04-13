@@ -20,6 +20,7 @@ env:
 runner:
   horizon_length: 24
   mini_epochs: 2
+  mini_batches: 4
   save_interval: 100
   use_wandb: true
 

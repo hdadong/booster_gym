@@ -13,7 +13,7 @@ import shutil
 import gc
 from utils.model_mbrl import *
 from utils.buffer import ExperienceBuffer
-from utils.utils import discount_values, surrogate_loss
+from utils.utils import compute_returns_advantages, surrogate_loss
 from utils.recorder import Recorder
 from envs import *
 from datetime import datetime
@@ -141,10 +141,7 @@ class Runner:
 
 
         flag_policy_train = os.path.join(os.path.join("logs/", self.policy_path), 'flag_policy_train.flag')
-
-
         processed_dirs = set()
-    
 
         for it in range(self.cfg["basic"]["max_iterations"]):
             # within horizon_length, env.step() is called with same act
@@ -156,114 +153,131 @@ class Runner:
             processed_dirs.add(os.path.basename(data_dir))
             print(f"[{datetime.now()}] Processing data from {data_dir}")
 
-
             self.buffer.load_data(npz_file=data_dir)
-            with torch.no_grad():
-                old_dist = self.model.act(self.buffer["obses"])
-                old_actions_log_prob = old_dist.log_prob(self.buffer["actions"]).sum(dim=-1)
 
+            # Compute returns and advantages using old value
+            with torch.no_grad():
+                values = self.model.est_value_all(self.buffer["privileged_obses"])
+                last_values = self.model.est_value_all(self.buffer["last_obses_all"])
+                returns, advantages = compute_returns_advantages(
+                    self.buffer["rewards"],
+                    self.buffer["dones"],
+                    values,
+                    last_values,
+                    self.cfg["algorithm"]["gamma"],
+                    self.cfg["algorithm"]["lam"],
+                )
+                advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+
+            old_dist = self.model.act(self.buffer["obses"])
+            old_mu = old_dist.loc
+            old_sigma = old_dist.scale
+            old_log_prob = old_dist.log_prob(self.buffer["actions"]).sum(dim=-1)
+
+            obs = self.buffer["obses"]
+            pri_obs = self.buffer["privileged_obses"]
+            actions = self.buffer["actions"]
+            dones = self.buffer["dones"]
+            mean_kl = 0.0
             mean_value_loss = 0
             mean_actor_loss = 0
             mean_bound_loss = 0
             mean_entropy = 0
-            mean_kl = 0
-            for n in range(self.cfg["runner"]["mini_epochs"]):
-                values = self.model.est_value_all(self.buffer["privileged_obses"])
-                last_values = self.model.est_value_all(self.buffer["last_obses_all"])
+            for epoch in range(self.cfg["runner"]["mini_epochs"]):
+                indices = torch.randperm(obs.shape[0] * obs.shape[1], device=self.device)
+                batch_size = obs.shape[0] * obs.shape[1]
+                mini_batch_size = batch_size // self.cfg["runner"]["mini_batches"]
 
-                with torch.no_grad():
-                    advantages = discount_values(
-                        self.buffer["rewards"],
-                        self.buffer["dones"],
-                        values,
-                        last_values,
-                        self.cfg["algorithm"]["gamma"],
-                        self.cfg["algorithm"]["lam"],
+                for i in range(self.cfg["runner"]["mini_batches"]):
+                    start = i * mini_batch_size
+                    end = (i + 1) * mini_batch_size
+                    batch_idx = indices[start:end]
+
+
+                    obs_batch = obs.reshape(-1, obs.shape[-1])[batch_idx]
+                    pri_obs_batch = pri_obs.reshape(-1, pri_obs.shape[-1])[batch_idx]
+                    actions_batch = actions.reshape(-1, actions.shape[-1])[batch_idx]
+                    returns_batch = returns.reshape(-1)[batch_idx]
+                    advantages_batch = advantages.reshape(-1)[batch_idx]
+                    old_log_prob_batch = old_log_prob.reshape(-1)[batch_idx]
+                    old_mu_batch = old_mu.reshape(-1, old_mu.shape[-1])[batch_idx]
+                    old_sigma_batch = old_sigma.reshape(-1, old_sigma.shape[-1])[batch_idx]
+                    # current policy distribution
+                    dist = self.model.act(obs_batch)
+                    value = self.model.est_value(obs_batch, pri_obs_batch)
+
+                    # loss
+                    new_log_prob = dist.log_prob(actions_batch).sum(dim=-1)
+                    entropy = dist.entropy().sum(dim=-1)
+                    policy_loss = surrogate_loss(old_log_prob_batch, new_log_prob, advantages_batch)
+
+                    value_loss = F.mse_loss(value, returns_batch)
+
+                    bound_loss = torch.clip(dist.loc - 1.0, min=0.0).square().mean() + torch.clip(dist.loc + 1.0, max=0.0).square().mean()
+
+                    loss = (
+                        policy_loss
+                        + value_loss
+                        + self.cfg["algorithm"]["entropy_coef"] * entropy.mean()
+                        + self.cfg["algorithm"]["bound_coef"] * bound_loss
                     )
-                    returns = values + advantages
-                    advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-                print(values.shape, returns.shape, advantages.shape)
-                # not use the done=true data to calculate the value loss, actor loss, bound loss, entropy
-                value_loss = F.mse_loss(values, returns)
-                # not use the done=true data to calculate the actor loss, bound loss, entropy
-                dist = self.model.act(self.buffer["obses"])
-                actions_log_prob = dist.log_prob(self.buffer["actions"]).sum(dim=-1)
-                actor_loss = surrogate_loss(old_actions_log_prob, actions_log_prob, advantages)
 
-                bound_loss = torch.clip(dist.loc - 1.0, min=0.0).square().mean() + torch.clip(dist.loc + 1.0, max=0.0).square().mean()
+                    self.optimizer.zero_grad()
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+                    self.optimizer.step()
+                    with torch.no_grad():
+                        dist = self.model.act(obs_batch)
 
-                entropy = dist.entropy().sum(dim=-1)
+                        eps = 1e-6
+                        kl = torch.sum(
+                            torch.log((dist.scale + eps) / (old_sigma_batch + eps))
+                            + 0.5 * (torch.square(old_sigma_batch) + torch.square(dist.loc - old_mu_batch)) / (torch.square(dist.scale) + eps)
+                            - 0.5,
+                            axis=-1,
+                        )
+                        kl_mean = torch.mean(kl)
+                        if kl_mean > self.cfg["algorithm"]["desired_kl"] * 2:
+                            self.original_learning_rate = self.learning_rate
+                            self.learning_rate = max(1e-5, self.learning_rate / 1.5)
+                            print(f"Reducing learning rate {self.original_learning_rate} to {self.learning_rate} due to high KL divergence: {kl_mean}")
+                        elif kl_mean < self.cfg["algorithm"]["desired_kl"] / 2:
+                            self.original_learning_rate = self.learning_rate
+                            self.learning_rate = min(1e-2, self.learning_rate * 1.5)
+                            print(f"Increasing learning rate {self.original_learning_rate} to {self.learning_rate} due to low KL divergence: {kl_mean}")
+                        for param_group in self.optimizer.param_groups:
+                            param_group["lr"] = self.learning_rate
+                        mean_value_loss += value_loss.item()
+                        mean_actor_loss += policy_loss.item()
+                        mean_bound_loss += bound_loss.item()
+                        mean_entropy += entropy.mean()
+                        mean_kl += kl_mean.item()
 
+            mean_value_loss /= self.cfg["runner"]["mini_batches"] * self.cfg["runner"]["mini_epochs"]
+            mean_actor_loss /= self.cfg["runner"]["mini_batches"] * self.cfg["runner"]["mini_epochs"]
+            mean_bound_loss /= self.cfg["runner"]["mini_batches"] * self.cfg["runner"]["mini_epochs"]
+            mean_entropy /= self.cfg["runner"]["mini_batches"] * self.cfg["runner"]["mini_epochs"]
+            mean_kl /= self.cfg["runner"]["mini_batches"] * self.cfg["runner"]["mini_epochs"]
+            self.recorder.record_statistics({
+                "value_loss": mean_value_loss,
+                "actor_loss": mean_actor_loss,
+                "bound_loss": mean_bound_loss,
+                "entropy": mean_entropy,
+                "kl_mean": mean_kl,
+                "lr": self.learning_rate,
 
-                loss = (
-                    value_loss
-                    + actor_loss
-                    + self.cfg["algorithm"]["bound_coef"] * bound_loss
-                    + self.cfg["algorithm"]["entropy_coef"] * entropy.mean()
-                )
-                self.optimizer.zero_grad()
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
-                self.optimizer.step()
+            }, it)
 
-                with torch.no_grad():
-                    dist = self.model.act(self.buffer["obses"])
-                    kl = torch.sum(
-                        torch.log(dist.scale / old_dist.scale)
-                        + 0.5 * (torch.square(old_dist.scale) + torch.square(dist.loc - old_dist.loc)) / torch.square(dist.scale)
-                        - 0.5,
-                        axis=-1,
-                    )
-                    kl_mean = torch.mean(kl)
-                    mean_kl += kl_mean.item()
-                    if mean_kl > self.cfg["algorithm"]["desired_kl"] * 2:
-                        self.orignal_learning_rate = self.learning_rate
-                        self.learning_rate = max(1e-5, self.learning_rate / 1.5)
-                        print(f"Reducing learning rate {self.orignal_learning_rate} to {self.learning_rate} due to high KL divergence: {mean_kl}")
-                    elif mean_kl < self.cfg["algorithm"]["desired_kl"] / 2:
-                        self.orignal_learning_rate = self.learning_rate
-                        self.learning_rate = min(1e-2, self.learning_rate * 1.5)
-                        print(f"Increasing learning rate {self.orignal_learning_rate} to {self.learning_rate} due to low KL divergence: {mean_kl}")
-                    for param_group in self.optimizer.param_groups:
-                        param_group["lr"] = self.learning_rate
-
-                mean_value_loss += value_loss.item()
-                mean_actor_loss += actor_loss.item()
-                mean_bound_loss += bound_loss.item()
-                mean_entropy += entropy.mean()
-            
-            mean_value_loss /= self.cfg["runner"]["mini_epochs"]
-            mean_actor_loss /= self.cfg["runner"]["mini_epochs"]
-            mean_bound_loss /= self.cfg["runner"]["mini_epochs"]
-            mean_entropy /= self.cfg["runner"]["mini_epochs"]
-            mean_kl /= self.cfg["runner"]["mini_epochs"]
-            
-
-            self.recorder.record_statistics(
-                {
-                    "value_loss": mean_value_loss,
-                    "actor_loss": mean_actor_loss,
-                    "bound_loss": mean_bound_loss,
-                    "entropy": mean_entropy,
-                    "kl_mean": mean_kl,
-                    "lr": self.learning_rate,
-                },
-                it,
-            )
-
-            self.recorder.save(
-                {
-                    "model": self.model.state_dict(),
-                    "optimizer": self.optimizer.state_dict(),
-                    "learning_rate": self.learning_rate,
-                },
-                it + 1,
-            )
+            self.recorder.save({
+                "model": self.model.state_dict(),
+                "optimizer": self.optimizer.state_dict(),
+                "learning_rate": self.learning_rate,
+            }, it + 1)
             print("epoch: {}/{}".format(it + 1, self.cfg["basic"]["max_iterations"]))
 
             os.remove(data_dir)
             os.remove(flag_policy_train)
-            print("Train Done, delete flag and data, continue to generate data。")
+            print("Train done, data/flag cleared.")
 
     def play(self):
         self.cfg["basic"]["checkpoint"] = -1
