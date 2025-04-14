@@ -86,7 +86,7 @@ Follow these steps to set up your environment:
 To start training a policy, run the following command:
 
 ```sh
-$ python train.py --task=T1
+$ python train.py --task=T1 --headless=True
 
 ```
 ### 2. Training using MBRL
@@ -94,10 +94,11 @@ $ python train.py --task=T1
 To start training a policy, run the following command:
 
 ```sh
+export CUDA_VISIBLE_DEVICES=0
+$ python play_mbrl_train_policy.py --task=T1_MBRL --headless=True
 
-$ python play_mbrl_train_policy.py --task=T1_MBRL
-
-$ python play_mbrl_collect_data.py --task=T1_MBRL
+export CUDA_VISIBLE_DEVICES=1
+$ python play_mbrl_collect_data.py --task=T1_MBRL --headless=True
 
 ```
 
@@ -157,7 +158,12 @@ You can disable W&B tracking by setting `use_wandb` to `false` in the config fil
 To test the trained policy in Isaac Gym, run:
 
 ```sh
+# export vision device
+export CUDA_VISIBLE_DEVICES=0
 $ python play.py --task=T1 --checkpoint=-1
+
+$ python play.py --task=T1_MBRL_baseline --checkpoint=-1
+
 ```
 
 Videos of the evaluation are automatically saved in `videos/<date-time>.mp4`. You can disable video recording by setting `record_video` to `false` in the config file.
@@ -169,7 +175,10 @@ To test the policy in MuJoCo, run:
 ```sh
 $ python play_mujoco.py --task=T1 --checkpoint=/home/admin123/booster_gym/logs/2025-03-23-21-53-21/nn/model_4400.pth
 
-$ python play_mujoco.py --task=T1_MBRL_baseline
+$ python play_mujoco.py --task=T1_MBRL_baseline 
+
+$ python play_mujoco_mbrl.py --task=T1_MBRL
+
 ```
 
 ---
