@@ -159,7 +159,7 @@ To test the trained policy in Isaac Gym, run:
 
 ```sh
 # export vision device
-export CUDA_VISIBLE_DEVICES=0
+export CUDA_VISIBLE_DEVICES=1
 $ python play.py --task=T1 --checkpoint=-1
 
 $ python play.py --task=T1_MBRL_baseline --checkpoint=-1
