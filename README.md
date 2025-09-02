@@ -130,7 +130,7 @@ You can disable W&B tracking by setting `use_wandb` to `false` in the config fil
 To test the trained policy in Isaac Gym, run:
 
 ```sh
-$ python play.py --task=T1 --checkpoint=-1
+$ python play.py --task=T1 --checkpoint=/home/admin123/booster_gym/model_10000_safe.pth
 ```
 
 Videos of the evaluation are automatically saved in `videos/<date-time>.mp4`. You can disable video recording by setting `record_video` to `false` in the config file.
@@ -140,7 +140,7 @@ Videos of the evaluation are automatically saved in `videos/<date-time>.mp4`. Yo
 To test the policy in MuJoCo, run:
 
 ```sh
-$ python play_mujoco.py --task=T1 --checkpoint=-1
+$ python play_mujoco.py --task=T1 --checkpoint=/home/admin123/booster_gym/model_10000_safe.pt
 ```
 
 ---
