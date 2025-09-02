@@ -9,7 +9,7 @@ import time
 @dataclass
 class JoystickConfig:
     max_vx: float = 0.5
-    max_vy: float = 0.5
+    max_vx: float = 0.8
     max_vyaw: float = 0.5
     control_threshold: float = 0.1
     # logitech
