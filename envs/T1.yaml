@@ -89,8 +89,8 @@ init_state:
   default_joint_angles: {"Hip_Pitch": -0.2, "Knee_Pitch": 0.4, "Ankle_Pitch": -0.25, "default": 0.} # target angles when action = 0.0
 
 control:
-  stiffness: {"Hip": 200., "Knee": 200., "Ankle": 50.} # [N*m/rad]
-  damping: {"Hip": 5., "Knee": 5., "Ankle": 1.} # [N*m*s/rad]
+  stiffness: {"Hip": 100., "Knee": 100., "Ankle": 20.} # [N*m/rad]
+  damping: {"Hip": 2., "Knee": 2., "Ankle": 2.} # [N*m*s/rad]
   action_scale: 1.
   decimation: 10
 
