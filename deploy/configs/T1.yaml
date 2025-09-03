@@ -37,7 +37,7 @@ policy:
   policy_path: "./models/sac.pt"
   num_actions: 12
   num_observations: 47
-  gait_frequency: 1
+  gait_frequency: 1.5
 
   normalization:
     gravity: 1.0
