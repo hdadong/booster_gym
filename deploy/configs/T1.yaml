@@ -34,7 +34,11 @@ common:
   ]
 
 policy:
+<<<<<<< HEAD
   policy_path: "./models/policy_65074000..pt"
+=======
+  policy_path: "./models/policy_15024000..pt"
+>>>>>>> 9151600
   num_actions: 12
   num_observations: 47
   gait_frequency: 1.5
