@@ -167,10 +167,10 @@ class Policy:
         )
         self.obs[9] = np.cos(2 * np.pi * self.gait_process) * (self.gait_frequency > 1.0e-8)
         self.obs[10] = np.sin(2 * np.pi * self.gait_process) * (self.gait_frequency > 1.0e-8)
-        self.obs[11:23] = dof_pos[11:]
-        self.obs[23:35] = dof_vel[11:]
-        # self.obs[11:23] = (dof_pos - self.default_dof_pos)[11:] * self.cfg["policy"]["normalization"]["dof_pos"]
-        # self.obs[23:35] = dof_vel[11:] * self.cfg["policy"]["normalization"]["dof_vel"]
+        # self.obs[11:23] = dof_pos[11:]
+        # self.obs[23:35] = dof_vel[11:]
+        self.obs[11:23] = (dof_pos - self.default_dof_pos)[11:] * self.cfg["policy"]["normalization"]["dof_pos"]
+        self.obs[23:35] = dof_vel[11:] * self.cfg["policy"]["normalization"]["dof_vel"]
         self.obs[35:47] = self.actions
         
         obs_torch = torch.tensor(self.obs)
