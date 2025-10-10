@@ -20,6 +20,7 @@ from utils.remote_control_service import RemoteControlService
 from utils.rotate import rotate_vector_inverse_rpy
 from utils.timer import TimerConfig, Timer
 from utils.policy import Policy
+from utils.policy_simp import Policy as Policy_simp
 
 
 class Controller:
@@ -34,7 +35,11 @@ class Controller:
 
         # Initialize components
         self.remoteControlService = RemoteControlService()
-        self.policy = Policy(cfg=self.cfg)
+        if self.cfg["common"]["use_simp"]:
+            print("simp policy")
+            self.policy = Policy_simp(cfg=self.cfg)
+        else:
+            self.policy = Policy(cfg=self.cfg)
 
         self._init_timer()
         self._init_low_state_values()
