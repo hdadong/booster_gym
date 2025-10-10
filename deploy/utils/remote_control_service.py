@@ -9,7 +9,7 @@ import time
 @dataclass
 class JoystickConfig:
     max_vx: float = 0.8
-    max_vy: float = 0.5
+    max_vy: float = 0.6
     max_vyaw: float = 0.5
     control_threshold: float = 0.1
     # logitech
@@ -92,11 +92,14 @@ class RemoteControlService:
             old_y = self.vy
             self.vy += 0.1
             self.vy = min(self.vy, self.config.max_vy)
+            print(" self.config.max_vy",  self.config.max_vy)
             print(f"VY: {old_y:.1f} => {self.vy:.1f}")
         if key == "d":
             old_y = self.vy
             self.vy -= 0.1
             self.vy = max(self.vy, -self.config.max_vy)
+            print(" self.config.max_vy",  self.config.max_vy)
+
             print(f"VY: {old_y:.1f} => {self.vy:.1f}")
         if key == "q":
             old_yaw = self.vyaw
