@@ -35,7 +35,7 @@ common:
   ]
 
 policy:
-  policy_path: "./models/policy_40005000_flat_moresimple..pt"
+  policy_path: "./models/policy_45009000_feetvel_acc..pt"
   num_actions: 12
   num_observations: 47
   gait_frequency: 1.5
