@@ -174,9 +174,9 @@ class Policy:
         self.obs[35:47] = self.actions
         
         obs_torch = torch.tensor(self.obs)
-        obs_torch_minmaxnorm = self.obs_minmax_normalizer.normalize_obs(obs_torch)
+        #obs_torch_minmaxnorm = self.obs_minmax_normalizer.normalize_obs(obs_torch)
 
-        dist = self.policy(obs_torch_minmaxnorm.unsqueeze(0))        # -> shape [1, 2*A]
+        dist = self.policy(obs_torch.unsqueeze(0))        # -> shape [1, 2*A]
         self.actions[:]= self.normalizer.mode(dist).detach().numpy()     # -> shape [1, A]
         self.actions[:] = np.clip(
             self.actions,
