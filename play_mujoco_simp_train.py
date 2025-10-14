@@ -237,95 +237,92 @@ def run_mujoco(policy, cfg, render: bool = False):
         {key: [] for key in data_dict}  # Create a new dictionary with the same structure
         for _ in range(num_envs)
     ]
-
-    with mujoco.viewer.launch_passive(mj_model, mj_data) as viewer:
+    if render:
+        viewer =  mujoco.viewer.launch_passive(mj_model, mj_data)
         viewer.cam.elevation = -20
-        print(f"Set command (x, y, yaw): ")
-        while viewer.is_running():
+    while True:
+        base_pos = mj_data.qpos.astype(np.float32)[:3]
+        dof_pos = mj_data.qpos.astype(np.float32)[7:]
+        dof_vel = mj_data.qvel.astype(np.float32)[6:]
+        quat = mj_data.sensor("orientation").data[[1, 2, 3, 0]].astype(np.float32)
+        quat_wxyz = mj_data.sensor("orientation").data.astype(np.float32)
 
-            base_pos = mj_data.qpos.astype(np.float32)[:3]
-            dof_pos = mj_data.qpos.astype(np.float32)[7:]
-            dof_vel = mj_data.qvel.astype(np.float32)[6:]
-            quat = mj_data.sensor("orientation").data[[1, 2, 3, 0]].astype(np.float32)
-            quat_wxyz = mj_data.sensor("orientation").data.astype(np.float32)
+        base_ang_vel = mj_data.sensor("angular-velocity").data.astype(np.float32)
+        base_lin_vel = mj_data.sensor("linear-velocity").data.astype(np.float32)
 
-            base_ang_vel = mj_data.sensor("angular-velocity").data.astype(np.float32)
-            base_lin_vel = mj_data.sensor("linear-velocity").data.astype(np.float32)
+        projected_gravity = quat_rotate_inverse(quat, np.array([0.0, 0.0, -1.0]))
+        ang_vel_global = rotate(quat, base_ang_vel)
+        if it % cfg["control"]["decimation"] == 0:
+            if step != 0:
+                data_buffers[0]['state'].append(state)
+                data_buffers[0]['wm_state'].append(wm_state[0])
+                data_buffers[0]['priv_state'].append(priv_state)
+                data_buffers[0]['actions'].append(actions[0])
+                data_buffers[0]['torques'].append(torque)
+                data_buffers[0]['contacts'].append([0.0,0.0])
+                data_buffers[0]['rewards'].append(0)
+                data_buffers[0]['timestamps'].append(0)
+            
+            state = np.zeros(cfg["env"]["num_observations"], dtype=np.float32)
+            state[0:3] = projected_gravity
+            state[3:6] = base_ang_vel
+            state[6] = lin_vel_x 
+            state[7] = lin_vel_y
+            state[8] = ang_vel_yaw
+            state[9] = np.cos(2 * np.pi * gait_process) * (gait_frequency > 1.0e-8)
+            state[10] = np.sin(2 * np.pi * gait_process) * (gait_frequency > 1.0e-8)
+            state[11:23] = dof_pos
+            state[23:35] = dof_vel
+            state[35:47] = actions
 
-            projected_gravity = quat_rotate_inverse(quat, np.array([0.0, 0.0, -1.0]))
-            ang_vel_global = rotate(quat, base_ang_vel)
-            if it % cfg["control"]["decimation"] == 0:
-                if step != 0:
-                    data_buffers[0]['state'].append(state)
-                    data_buffers[0]['wm_state'].append(wm_state[0])
-                    data_buffers[0]['priv_state'].append(priv_state)
-                    data_buffers[0]['actions'].append(actions[0])
-                    data_buffers[0]['torques'].append(torque)
-                    data_buffers[0]['contacts'].append([0.0,0.0])
-                    data_buffers[0]['rewards'].append(0)
-                    data_buffers[0]['timestamps'].append(0)
-                
-                state = np.zeros(cfg["env"]["num_observations"], dtype=np.float32)
-                state[0:3] = projected_gravity
-                state[3:6] = base_ang_vel
-                state[6] = lin_vel_x 
-                state[7] = lin_vel_y
-                state[8] = ang_vel_yaw
-                state[9] = np.cos(2 * np.pi * gait_process) * (gait_frequency > 1.0e-8)
-                state[10] = np.sin(2 * np.pi * gait_process) * (gait_frequency > 1.0e-8)
-                state[11:23] = dof_pos
-                state[23:35] = dof_vel
-                state[35:47] = actions
+            obs_torch = torch.tensor(state)
 
-                obs_torch = torch.tensor(state)
+            wm_state = np.zeros(87)
+            wm_state[:state.shape[0]] = state
+            wm_state[obs_minmax_normalizer.wm_rpy_rate_idxs] = base_ang_vel
+            wm_state[obs_minmax_normalizer.wm_gravity_idxs] = projected_gravity
+            wm_state[obs_minmax_normalizer.wm_quat_idxs] = quat_wxyz
+            wm_state[obs_minmax_normalizer.wm_base_vel_idxs] = base_lin_vel
+            wm_state[obs_minmax_normalizer.wm_q_idxs] = dof_pos
+            wm_state[obs_minmax_normalizer.wm_qd_idxs] = dof_vel
+            wm_state[obs_minmax_normalizer.wm_height_idx] = base_pos[2]
+            wm_state[obs_minmax_normalizer.wm_gait_process_idx] = gait_process
+            wm_state[obs_minmax_normalizer.wm_gait_frequency_idx] = gait_frequency
+            wm_state = torch.tensor(wm_state)
+            wm_state = obs_minmax_normalizer.normalize_obs(wm_state)
 
-                wm_state = np.zeros(87)
-                wm_state[:state.shape[0]] = state
-                wm_state[obs_minmax_normalizer.wm_rpy_rate_idxs] = base_ang_vel
-                wm_state[obs_minmax_normalizer.wm_gravity_idxs] = projected_gravity
-                wm_state[obs_minmax_normalizer.wm_quat_idxs] = quat_wxyz
-                wm_state[obs_minmax_normalizer.wm_base_vel_idxs] = base_lin_vel
-                wm_state[obs_minmax_normalizer.wm_q_idxs] = dof_pos
-                wm_state[obs_minmax_normalizer.wm_qd_idxs] = dof_vel
-                wm_state[obs_minmax_normalizer.wm_height_idx] = base_pos[2]
-                wm_state[obs_minmax_normalizer.wm_gait_process_idx] = gait_process
-                wm_state[obs_minmax_normalizer.wm_gait_frequency_idx] = gait_frequency
-                wm_state = torch.tensor(wm_state)
-                wm_state = obs_minmax_normalizer.normalize_obs(wm_state)
+            priv_state = np.zeros(84)
+            priv_state[:state.shape[0]] = state
+            priv_state[obs_minmax_normalizer.priv_rpy_rate_idxs] = base_ang_vel
+            priv_state[obs_minmax_normalizer.priv_gravity_idxs] = projected_gravity
+            priv_state[obs_minmax_normalizer.priv_base_lin_vel_idxs] = base_lin_vel
+            priv_state[obs_minmax_normalizer.priv_q_idxs] = dof_pos
+            priv_state[obs_minmax_normalizer.priv_qd_idxs] = dof_vel
+            priv_state[obs_minmax_normalizer.priv_height_idx] = base_pos[2]
+            priv_state[obs_minmax_normalizer.priv_global_ang_vel_idxs] = ang_vel_global
+            priv_state = torch.tensor(priv_state)
+            dist = policy(obs_torch.unsqueeze(0))        # -> shape [1, 2*A]
+            #actions = dist.detach().numpy()     # -> shape [1, A]
 
-                priv_state = np.zeros(84)
-                priv_state[:state.shape[0]] = state
-                priv_state[obs_minmax_normalizer.priv_rpy_rate_idxs] = base_ang_vel
-                priv_state[obs_minmax_normalizer.priv_gravity_idxs] = projected_gravity
-                priv_state[obs_minmax_normalizer.priv_base_lin_vel_idxs] = base_lin_vel
-                priv_state[obs_minmax_normalizer.priv_q_idxs] = dof_pos
-                priv_state[obs_minmax_normalizer.priv_qd_idxs] = dof_vel
-                priv_state[obs_minmax_normalizer.priv_height_idx] = base_pos[2]
-                priv_state[obs_minmax_normalizer.priv_global_ang_vel_idxs] = ang_vel_global
-                priv_state = torch.tensor(priv_state)
-                dist = policy(obs_torch.unsqueeze(0))        # -> shape [1, 2*A]
-                #actions = dist.detach().numpy()     # -> shape [1, A]
-
-                actions = normalizer.mode(dist).detach().numpy()     # -> shape [1, A]
-                actions[:] = np.clip(actions, -cfg["normalization"]["clip_actions"], cfg["normalization"]["clip_actions"])
-                dof_targets[:] = default_dof_pos + cfg["control"]["action_scale"] * actions
-                step += 1
-
-            torque = np.clip(
-                dof_stiffness * (dof_targets - dof_pos) - dof_damping * dof_vel,
-                mj_model.actuator_ctrlrange[:, 0],
-                mj_model.actuator_ctrlrange[:, 1],
-            )
-            mj_data.ctrl = torque
-            mujoco.mj_step(mj_model, mj_data)
-            it += 1
-            gait_process = np.fmod(gait_process + cfg["sim"]["dt"] * gait_frequency, 1.0)
-            if step == 1000 or base_pos[2] < 0.2:
-                break
-
+            actions = normalizer.mode(dist).detach().numpy()     # -> shape [1, A]
+            actions[:] = np.clip(actions, -cfg["normalization"]["clip_actions"], cfg["normalization"]["clip_actions"])
+            dof_targets[:] = default_dof_pos + cfg["control"]["action_scale"] * actions
+            step += 1
+        torque = np.clip(
+            dof_stiffness * (dof_targets - dof_pos) - dof_damping * dof_vel,
+            mj_model.actuator_ctrlrange[:, 0],
+            mj_model.actuator_ctrlrange[:, 1],
+        )
+        mj_data.ctrl = torque
+        mujoco.mj_step(mj_model, mj_data)
+        it += 1
+        gait_process = np.fmod(gait_process + cfg["sim"]["dt"] * gait_frequency, 1.0)
+        if step == 1000 or base_pos[2] < 0.2:
+            break
+        if render:    
             viewer.cam.lookat[:] = mj_data.qpos.astype(np.float32)[0:3]
             viewer.sync()
-
+    if render:
         viewer.close()
     return step, data_buffers
 def quat_rotate_inverse(q, v):
@@ -414,6 +411,7 @@ if __name__ == "__main__":
                 rewards=rewards_array,
                 timestamps=timestamps_array,
             )
+            print("store the data", npz_filename, "size is ", episode_step)
             # test_load = np.load(npz_filename)
             # for key in test_load:
             #     print(f"{key}:")
@@ -430,5 +428,6 @@ if __name__ == "__main__":
             total_step += episode_step
 
         open(flag_policy_train, 'w').close()
+        print("wait for training")
         while os.path.exists(flag_policy_train):
             time.sleep(3)  # 每隔10秒检查一次
