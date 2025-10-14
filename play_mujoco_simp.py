@@ -136,9 +136,6 @@ if __name__ == "__main__":
         cfg["basic"]["checkpoint"] = args.checkpoint
     policy = torch.jit.load(cfg["basic"]["checkpoint"])
 
-    #policy = load_policy(cfg["basic"]["checkpoint"])
-    #policy = torch.compile(policy)
-
     mj_model = mujoco.MjModel.from_xml_path(cfg["asset"]["mujoco_file"])
     mj_model.opt.timestep = cfg["sim"]["dt"]
     mj_data = mujoco.MjData(mj_model)
@@ -218,8 +215,8 @@ if __name__ == "__main__":
                 obs[23:35] = dof_vel
                 obs[35:47] = actions
                 obs_torch = torch.tensor(obs)
-                obs_torch_minmaxnorm = obs_minmax_normalizer.normalize_obs(obs_torch)
-                dist = policy(obs_torch_minmaxnorm.unsqueeze(0))        # -> shape [1, 2*A]
+                #obs_torch_minmaxnorm = obs_minmax_normalizer.normalize_obs(obs_torch)
+                dist = policy(obs_torch.unsqueeze(0))        # -> shape [1, 2*A]
                 #actions = dist.detach().numpy()     # -> shape [1, A]
 
                 actions = normalizer.mode(dist).detach().numpy()     # -> shape [1, A]

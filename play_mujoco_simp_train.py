@@ -374,8 +374,10 @@ if __name__ == "__main__":
     while True:
         while policy_path is None:
             policy_path = get_latest_policy_path(policy_dir)
-            print("load the latest policy", policy_path)
-            policy = torch.jit.load(policy_path)
+        time.sleep(3)
+        print("load the latest policy", policy_path)
+        policy = torch.jit.load(policy_path)
+        policy_path = None
 
         # 创建新的数据文件夹
         real_data_dir = os.path.join(base_data_dir, 'real_data_dir')
