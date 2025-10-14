@@ -7,10 +7,51 @@ import select
 import argparse
 import numpy as np
 import torch
-import mujoco, mujoco.viewer
 from utils.model import *
 from torch.distributions import Normal
 from datetime import datetime
+import time
+from typing import Optional
+from pathlib import Path
+import re
+
+def setup_gl_backend(render: bool, gl: str | None):
+    """根据参数设置 MuJoCo 的 GL 后端，必须在 import mujoco 前调用。"""
+    if gl:                    # 手动覆盖
+        os.environ["MUJOCO_GL"] = gl
+    elif render:              # 需要窗口渲染
+        os.environ["MUJOCO_GL"] = "glfw"
+    else:                     # 纯 headless
+        os.environ.setdefault("MUJOCO_GL", "egl")
+
+
+def get_latest_policy_path(policy_dir: str) -> Optional[str]:
+    """
+    从目录中查找形如 policy_<number>.pt 的权重文件，按<number>数值取最新。
+    若目录不存在或无匹配文件，则返回 None。
+    """
+    # 目录不存在
+    try:
+        names = os.listdir(policy_dir)
+    except FileNotFoundError:
+        return None
+
+    pattern = re.compile(r'^policy_(\d+)\.pt$')
+    candidates = []
+
+    for name in names:
+        m = pattern.match(name)
+        if m:
+            step = int(m.group(1))
+            candidates.append((step, name))
+
+    if not candidates:
+        return None
+
+    # 按数值排序，取最大
+    candidates.sort(key=lambda x: x[0])
+    latest_name = candidates[-1][1]
+    return os.path.join(policy_dir, latest_name)
 
 class minmaxnormalizer():
     def __init__(self):
@@ -131,11 +172,16 @@ class NormalTanhDistribution:
         dist = self.create_dist(parameters)
         return self.postprocessor.forward(dist.mean)
 
-def run_mujoco(policy, cfg, data_dir):
+def run_mujoco(policy, cfg, render: bool = False):
+    import mujoco  # 此时已设置好 MUJOCO_GL
+    if render:
+        import mujoco.viewer
+
     mj_model = mujoco.MjModel.from_xml_path(cfg["asset"]["mujoco_file"])
     mj_model.opt.timestep = cfg["sim"]["dt"]
     mj_data = mujoco.MjData(mj_model)
     mujoco.mj_resetData(mj_model, mj_data)
+
     default_dof_pos = np.zeros(mj_model.nu, dtype=np.float32)
     dof_stiffness = np.zeros(mj_model.nu, dtype=np.float32)
     dof_damping = np.zeros(mj_model.nu, dtype=np.float32)
@@ -168,14 +214,14 @@ def run_mujoco(policy, cfg, data_dir):
 
     actions = np.zeros((cfg["env"]["num_actions"]), dtype=np.float32)
     dof_targets = np.zeros(default_dof_pos.shape, dtype=np.float32)
-    gait_frequency = gait_process = 0.0
-    lin_vel_x = lin_vel_y = ang_vel_yaw = 0.0
+    gait_process = 0.0
+    gait_frequency = np.average(cfg["commands"]["gait_frequency"])
+    lin_vel_y = ang_vel_yaw = 0.0
+    lin_vel_x = 1.5
     it = 0
-    obs_minmax_normalizer = minmaxnormalizer()
+    step = 0
     num_envs = 1
-
-
-
+    obs_minmax_normalizer = minmaxnormalizer()
 
     data_dict =  {
             'state': [],
@@ -191,33 +237,12 @@ def run_mujoco(policy, cfg, data_dir):
         {key: [] for key in data_dict}  # Create a new dictionary with the same structure
         for _ in range(num_envs)
     ]
-    data_counts = [0] * num_envs
-
-    data_dir = os.path.join(data_dir, 'data_' + datetime.now().strftime('%Y%m%d_%H%M%S'))
-    os.makedirs(data_dir, exist_ok=True)
-    step = 0
 
     with mujoco.viewer.launch_passive(mj_model, mj_data) as viewer:
         viewer.cam.elevation = -20
         print(f"Set command (x, y, yaw): ")
         while viewer.is_running():
-            if select.select([sys.stdin], [], [], 0)[0]:
-                try:
-                    parts = sys.stdin.readline().strip().split()
-                    if len(parts) == 3:
-                        lin_vel_x, lin_vel_y, ang_vel_yaw = map(float, parts)
-                        if lin_vel_x == 0 and lin_vel_y == 0 and ang_vel_yaw == 0:
-                            gait_frequency = 0
-                        else:
-                            gait_frequency = np.average(cfg["commands"]["gait_frequency"])
-                        print(
-                            f"Updated command to: x={lin_vel_x}, y={lin_vel_y}, yaw={ang_vel_yaw}\nSet command (x, y, yaw): ",
-                            end="",
-                        )
-                    else:
-                        raise ValueError
-                except ValueError:
-                    print("Invalid input. Enter three numeric values.\nSet command (x, y, yaw): ", end="")
+
             base_pos = mj_data.qpos.astype(np.float32)[:3]
             dof_pos = mj_data.qpos.astype(np.float32)[7:]
             dof_vel = mj_data.qvel.astype(np.float32)[6:]
@@ -293,53 +318,16 @@ def run_mujoco(policy, cfg, data_dir):
             )
             mj_data.ctrl = torque
             mujoco.mj_step(mj_model, mj_data)
-            viewer.cam.lookat[:] = mj_data.qpos.astype(np.float32)[0:3]
-            viewer.sync()
             it += 1
             gait_process = np.fmod(gait_process + cfg["sim"]["dt"] * gait_frequency, 1.0)
-            if step == 1000:
+            if step == 1000 or base_pos[2] < 0.2:
                 break
-        env_id = 0
-        # 保存数据到 .npz 文件
-        npz_filename = os.path.join(
-            data_dir,
-            f'env_{env_id}_data_{data_counts[env_id]}.npz',
-        )
-        state_array = np.array(data_buffers[env_id]['state'], dtype=np.float32)
-        wm_state_array = np.array(data_buffers[env_id]['wm_state'], dtype=np.float32)
-        priv_state_array = np.array(data_buffers[env_id]['priv_state'], dtype=np.float32)
-        actions_array = np.array(data_buffers[env_id]['actions'], dtype=np.float32)
-        torques_array = np.array(data_buffers[env_id]['torques'], dtype=np.float32)
-        contact_array = np.array(data_buffers[env_id]['contacts'], dtype=np.float32)
-        rewards_array = np.array(data_buffers[env_id]['rewards'], dtype=np.float32)
-        timestamps_array = np.array(data_buffers[env_id]['timestamps'], dtype=np.float64)
-        np.savez_compressed(
-            npz_filename,
-            states=state_array,
-            wm_states=wm_state_array,
-            priv_states=priv_state_array,
-            actions=actions_array,
-            torques=torques_array,
-            contacts=contact_array,
-            rewards=rewards_array,
-            timestamps=timestamps_array,
-        )
-        # test_load = np.load(npz_filename)
-        # for key in test_load:
-        #     print(f"{key}:")
-        #     print(test_load[key])
-        # 清空该环境的数据缓冲区
-        data_buffers[env_id]['state'].clear()
-        data_buffers[env_id]['wm_state'].clear()
-        data_buffers[env_id]['priv_state'].clear()
-        data_buffers[env_id]['actions'].clear()
-        data_buffers[env_id]['torques'].clear()
-        data_buffers[env_id]['contacts'].clear()
-        data_buffers[env_id]['rewards'].clear()
-        data_buffers[env_id]['timestamps'].clear()
-        data_counts[env_id] += 1
+
+            viewer.cam.lookat[:] = mj_data.qpos.astype(np.float32)[0:3]
+            viewer.sync()
+
         viewer.close()
-    return step
+    return step, data_buffers
 def quat_rotate_inverse(q, v):
     q_w = q[-1]
     q_vec = q[:3]
@@ -365,33 +353,82 @@ def rotate(quat, vec):
   r = r + 2 * s * np.cross(u, vec)
   return r
 
-
+# python play_mujoco_simp_train.py --task=T1 --render
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--task", required=True, type=str, help="Name of the task to run.")
-    parser.add_argument("--checkpoint", type=str, help="Path of model checkpoint to load. Overrides config file if provided.")
+    parser.add_argument("--render", action="store_true",
+                        help="open gui render")
     args = parser.parse_args()
     cfg_file = os.path.join("envs", "{}.yaml".format(args.task))
     with open(cfg_file, "r", encoding="utf-8") as f:
         cfg = yaml.load(f.read(), Loader=yaml.FullLoader)
-    if args.checkpoint is not None:
-        cfg["basic"]["checkpoint"] = args.checkpoint
-    policy = torch.jit.load(cfg["basic"]["checkpoint"])
-    from pathlib import Path
-    import re
+
     root = Path("/home/admin123/transformer_worldmodel/ssrl/sac_data")
-
-
     pattern = re.compile(r"\d{8}_\d{6}")
-
     base_data_dir = max(
         (p for p in root.iterdir() if p.is_dir() and pattern.fullmatch(p.name)),
         key=lambda p: p.name,   # 目录名按字典序与时间顺序一致
     )
-    # 创建新的数据文件夹
-    data_dir = os.path.join(base_data_dir, 'real_data_dir')
-    flag_policy_train = os.path.join(base_data_dir, 'waiting_for_training.flag')
+    policy_dir = os.path.join(base_data_dir, 'policy_ckpt')
+    policy_path = None
+    env_id = 0
 
-    run_mujoco(policy, cfg, data_dir)
-    open(flag_policy_train, 'w').close()
+    while True:
+        while policy_path is None:
+            policy_path = get_latest_policy_path(policy_dir)
+            print("load the latest policy", policy_path)
+            policy = torch.jit.load(policy_path)
 
+        # 创建新的数据文件夹
+        real_data_dir = os.path.join(base_data_dir, 'real_data_dir')
+        episode_data_dir = os.path.join(real_data_dir, 'data_' + datetime.now().strftime('%Y%m%d_%H%M%S'))
+        os.makedirs(episode_data_dir, exist_ok=True)
+        flag_policy_train = os.path.join(base_data_dir, 'waiting_for_training.flag')
+        total_step = 0
+        episode_num = 0
+        while total_step < 1000:
+
+            episode_step, data_buffers = run_mujoco(policy, cfg, render=args.render)
+            # 保存数据到 .npz 文件
+            npz_filename = os.path.join(
+                episode_data_dir,
+                f'env_{env_id}_data_{episode_num}.npz',
+            )
+            state_array = np.array(data_buffers[env_id]['state'], dtype=np.float32)
+            wm_state_array = np.array(data_buffers[env_id]['wm_state'], dtype=np.float32)
+            priv_state_array = np.array(data_buffers[env_id]['priv_state'], dtype=np.float32)
+            actions_array = np.array(data_buffers[env_id]['actions'], dtype=np.float32)
+            torques_array = np.array(data_buffers[env_id]['torques'], dtype=np.float32)
+            contact_array = np.array(data_buffers[env_id]['contacts'], dtype=np.float32)
+            rewards_array = np.array(data_buffers[env_id]['rewards'], dtype=np.float32)
+            timestamps_array = np.array(data_buffers[env_id]['timestamps'], dtype=np.float64)
+            np.savez_compressed(
+                npz_filename,
+                states=state_array,
+                wm_states=wm_state_array,
+                priv_states=priv_state_array,
+                actions=actions_array,
+                torques=torques_array,
+                contacts=contact_array,
+                rewards=rewards_array,
+                timestamps=timestamps_array,
+            )
+            # test_load = np.load(npz_filename)
+            # for key in test_load:
+            #     print(f"{key}:")
+            #     print(test_load[key])
+            data_buffers[env_id]['state'].clear()
+            data_buffers[env_id]['wm_state'].clear()
+            data_buffers[env_id]['priv_state'].clear()
+            data_buffers[env_id]['actions'].clear()
+            data_buffers[env_id]['torques'].clear()
+            data_buffers[env_id]['contacts'].clear()
+            data_buffers[env_id]['rewards'].clear()
+            data_buffers[env_id]['timestamps'].clear()
+            episode_num += 1
+            total_step += episode_step
+
+        open(flag_policy_train, 'w').close()
+        while os.path.exists(flag_policy_train):
+            time.sleep(3)  # 每隔10秒检查一次
