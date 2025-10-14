@@ -10,59 +10,97 @@ import torch
 import mujoco, mujoco.viewer
 from utils.model import *
 from torch.distributions import Normal
+def quat_rotate_inverse(q, v):
+    q_w = q[-1]
+    q_vec = q[:3]
+    a = v * (2.0 * q_w**2 - 1.0)
+    b = np.cross(q_vec, v) * (q_w * 2.0)
+    c = q_vec * (np.dot(q_vec, v) * 2.0)
+    return a - b + c
 
+
+
+def rotate(quat, vec):
+  """Rotates a vector vec by a unit quaternion quat.
+
+  Args:
+    vec: (3,) a vector
+    quat: (4,) a quaternion
+
+  Returns:
+    ndarray(3) containing vec rotated by quat.
+  """
+  s, u = quat[-1], quat[:-1]
+  r = 2 * (np.dot(u, vec) * u) + (s * s - np.dot(u, u)) * vec
+  r = r + 2 * s * np.cross(u, vec)
+  return r
 class minmaxnormalizer():
     def __init__(self):
         self.device='cpu'
         # Normalization limits
-        self.obs_limit_min = torch.full((1, 47), -1.0, device=self.device)  # Min values
-        self.obs_limit_max = torch.full((1, 47), 1.0, device=self.device)   # Max values
+        self.obs_limit_min = torch.full((1, 87), -1.0, device=self.device)  # Min values
+        self.obs_limit_max = torch.full((1, 87), 1.0, device=self.device)   # Max values
 
-        indice_dof_pos = [i for i in range(11, 23, 1)]
-        self.obs_limit_min[:, indice_dof_pos] = torch.tensor([-1.8, -0.3, -1.0, 0.0, -0.87, -0.44, -1.8, -1.57, -1.0, 0.0, -0.87, -0.44], device=self.device) - 0.25
-        self.obs_limit_max[:, indice_dof_pos] = torch.tensor([1.57, 1.57, 1.0, 2.34, 0.35, 0.44, 1.57, 0.3, 1.0, 2.34, 0.35, 0.44], device=self.device) + 0.25
+        self.q_idxs = [i for i in range(11, 23, 1)]
+        self.obs_limit_min[:, self.q_idxs] = torch.tensor([-1.8, -0.3, -1.0, 0.0, -0.87, -0.44, -1.8, -1.57, -1.0, 0.0, -0.87, -0.44], device=self.device) - 0.25
+        self.obs_limit_max[:, self.q_idxs] = torch.tensor([1.57, 1.57, 1.0, 2.34, 0.35, 0.44, 1.57, 0.3, 1.0, 2.34, 0.35, 0.44], device=self.device) + 0.25
 
-        # indice_dof_pos = [i for i in range(60, 72, 1)]
-        # self.obs_limit_min[:, indice_dof_pos] = torch.tensor([-1.8, -0.3, -1.0, 0.0, -0.87, -0.44, -1.8, -1.57, -1.0, 0.0, -0.87, -0.44], device=self.device) - 0.25
-        # self.obs_limit_max[:, indice_dof_pos] = torch.tensor([1.57, 1.57, 1.0, 2.34, 0.35, 0.44, 1.57, 0.3, 1.0, 2.34, 0.35, 0.44], device=self.device) + 0.25
+        self.wm_q_idxs = [i for i in range(60, 72, 1)]
+        self.obs_limit_min[:, self.wm_q_idxs] = torch.tensor([-1.8, -0.3, -1.0, 0.0, -0.87, -0.44, -1.8, -1.57, -1.0, 0.0, -0.87, -0.44], device=self.device) - 0.25
+        self.obs_limit_max[:, self.wm_q_idxs] = torch.tensor([1.57, 1.57, 1.0, 2.34, 0.35, 0.44, 1.57, 0.3, 1.0, 2.34, 0.35, 0.44], device=self.device) + 0.25
 
-        # self._forward_vel_idx = 53
-        # self.obs_limit_min[:, self._forward_vel_idx] = 0.0
-        # self.obs_limit_max[:, self._forward_vel_idx] = 0.5
+        self.forward_vel_idx = 57
+        self.obs_limit_min[:, self.forward_vel_idx] = -0.2
+        self.obs_limit_max[:, self.forward_vel_idx] = 2.5
 
-        # self._y_vel_idx = 58
-        # self.obs_limit_min[:, self._y_vel_idx] = -0.5
-        # self.obs_limit_max[:, self._y_vel_idx] = 0.5
+        self.y_vel_idx = 58
+        self.obs_limit_min[:, self.y_vel_idx] = -0.5
+        self.obs_limit_max[:, self.y_vel_idx] = 0.5
 
-        # self._z_vel_idx = 59
-        # self.obs_limit_min[:, self._z_vel_idx] = -0.5
-        # self.obs_limit_max[:, self._z_vel_idx] = 0.5
+        self.z_vel_idx = 59
+        self.obs_limit_min[:, self.z_vel_idx] = -0.5
+        self.obs_limit_max[:, self.z_vel_idx] = 0.5
 
-        self._roll_rate_idx = 3
-        self._pitch_rate_idx = 4
-        self._turn_rate_idx = 5
-        self._rpy_rate_idxs = [i for i in range(self._roll_rate_idx, self._turn_rate_idx+1, 1)]
-        self.obs_limit_min[:, self._rpy_rate_idxs] = torch.tensor([-1.5, -1.5, -1.5], device=self.device)
-        self.obs_limit_max[:, self._rpy_rate_idxs] = torch.tensor([1.5, 1.5, 1.5], device=self.device)
+        self.roll_rate_idx = 3
+        self.pitch_rate_idx = 4
+        self.turn_rate_idx = 5
+        self.rpy_rate_idxs = [i for i in range(self.roll_rate_idx, self.turn_rate_idx+1, 1)]
+        self.obs_limit_min[:, self.rpy_rate_idxs] = torch.tensor([-1.5, -1.5, -1.5], device=self.device)
+        self.obs_limit_max[:, self.rpy_rate_idxs] = torch.tensor([1.5, 1.5, 1.5], device=self.device)
 
-        # self._priv_roll_rate_idx = 47
-        # self._priv_pitch_rate_idx = 48
-        # self._priv_turn_rate_idx = 49
-        # self._priv_rpy_rate_idxs = [i for i in range(self._priv_roll_rate_idx, self._priv_turn_rate_idx+1, 1)]
-        # self.obs_limit_min[:, self._priv_rpy_rate_idxs] = torch.tensor([-1.5, -1.5, -1.5], device=self.device)
-        # self.obs_limit_max[:, self._priv_rpy_rate_idxs] = torch.tensor([1.5, 1.5, 1.5], device=self.device)
+        self.wm_roll_rate_idx = 47
+        self.wm_pitch_rate_idx = 48
+        self.wm_turn_rate_idx = 49
+        self.wm_rpy_rate_idxs = [i for i in range(self.wm_roll_rate_idx, self.wm_turn_rate_idx+1, 1)]
+        self.obs_limit_min[:, self.wm_rpy_rate_idxs] = torch.tensor([-1.5, -1.5, -1.5], device=self.device)
+        self.obs_limit_max[:, self.wm_rpy_rate_idxs] = torch.tensor([1.5, 1.5, 1.5], device=self.device)
 
-        self._qd_idxs = [i for i in range(23, 35, 1)]
-        self.obs_limit_min[:, self._qd_idxs] = -20.0
-        self.obs_limit_max[:, self._qd_idxs] = 20
+        self.qd_idxs = [i for i in range(23, 35, 1)]
+        self.obs_limit_min[:, self.qd_idxs] = -20.0
+        self.obs_limit_max[:, self.qd_idxs] = 20
 
-        # self._qd_idxs = [i for i in range(72, 84, 1)]
-        # self.obs_limit_min[:, self._qd_idxs] = -20.0
-        # self.obs_limit_max[:, self._qd_idxs] = 20
+        self.wm_qd_idxs = [i for i in range(72, 84, 1)]
+        self.obs_limit_min[:, self.wm_qd_idxs] = -20.0
+        self.obs_limit_max[:, self.wm_qd_idxs] = 20
 
-        # indice_height = 84
-        # self.obs_limit_min[:, indice_height] = 0.0
-        # self.obs_limit_max[:, indice_height] = 0.8
+        self.wm_height_idx = 84
+        self.obs_limit_min[:, self.wm_height_idx] = 0.0
+        self.obs_limit_max[:, self.wm_height_idx] = 0.8
+
+
+        self.wm_gravity_idxs = [i for i in range(50, 53, 1)]
+        self.wm_quat_idxs = [i for i in range(53, 57, 1)]
+        self.wm_base_vel_idxs = [i for i in range(57, 60, 1)]
+        self.wm_gait_process_idx = 85
+        self.wm_gait_frequency_idx = 86
+        
+        self.priv_rpy_rate_idxs = self.wm_rpy_rate_idxs
+        self.priv_gravity_idxs = self.wm_gravity_idxs
+        self.priv_base_lin_vel_idxs =  [i for i in range(53, 56, 1)]
+        self.priv_global_ang_vel_idxs =  [i for i in range(56, 59, 1)]
+        self.priv_q_idxs = [i for i in range(59, 71, 1)]
+        self.priv_qd_idxs = [i for i in range(71, 83, 1)]
+        self.priv_height_idx = 83
 
     def normalize_obs(self, obs):
         # Normalize observation
@@ -114,14 +152,6 @@ class NormalTanhDistribution:
         dist = self.create_dist(parameters)
         return self.postprocessor.forward(dist.mean)
 
-
-def quat_rotate_inverse(q, v):
-    q_w = q[-1]
-    q_vec = q[:3]
-    a = v * (2.0 * q_w**2 - 1.0)
-    b = np.cross(q_vec, v) * (q_w * 2.0)
-    c = q_vec * (np.dot(q_vec, v) * 2.0)
-    return a - b + c
 
 
 if __name__ == "__main__":
@@ -199,9 +229,17 @@ if __name__ == "__main__":
                     print("Invalid input. Enter three numeric values.\nSet command (x, y, yaw): ", end="")
             dof_pos = mj_data.qpos.astype(np.float32)[7:]
             dof_vel = mj_data.qvel.astype(np.float32)[6:]
+            #print(mj_data.qpos.astype(np.float32)[2])
             quat = mj_data.sensor("orientation").data[[1, 2, 3, 0]].astype(np.float32)
             base_ang_vel = mj_data.sensor("angular-velocity").data.astype(np.float32)
+            base_lin_vel = mj_data.sensor("linear-velocity").data.astype(np.float32)
+            quat_wxyz = mj_data.sensor("orientation").data.astype(np.float32)
+            base_pos = mj_data.qpos.astype(np.float32)[:3]
+
+            #print("base_lin_vel", base_lin_vel)
             projected_gravity = quat_rotate_inverse(quat, np.array([0.0, 0.0, -1.0]))
+            ang_vel_global = rotate(quat, base_ang_vel)
+            #print("ang_vel_global", ang_vel_global, gait_process, gait_frequency)
             if it % cfg["control"]["decimation"] == 0:
                 obs = np.zeros(cfg["env"]["num_observations"], dtype=np.float32)
                 obs[0:3] = projected_gravity
@@ -215,6 +253,21 @@ if __name__ == "__main__":
                 obs[23:35] = dof_vel
                 obs[35:47] = actions
                 obs_torch = torch.tensor(obs)
+                #print("dof_pos", dof_pos)
+                wm_state = np.zeros(87)
+                wm_state[:obs.shape[0]] = obs
+                wm_state[obs_minmax_normalizer.wm_rpy_rate_idxs] = base_ang_vel
+                wm_state[obs_minmax_normalizer.wm_gravity_idxs] = projected_gravity
+                wm_state[obs_minmax_normalizer.wm_quat_idxs] = quat_wxyz
+                wm_state[obs_minmax_normalizer.wm_base_vel_idxs] = base_lin_vel
+                wm_state[obs_minmax_normalizer.wm_q_idxs] = dof_pos
+                wm_state[obs_minmax_normalizer.wm_qd_idxs] = dof_vel
+                wm_state[obs_minmax_normalizer.wm_height_idx] = base_pos[2]
+                wm_state[obs_minmax_normalizer.wm_gait_process_idx] = gait_process
+                wm_state[obs_minmax_normalizer.wm_gait_frequency_idx] = gait_frequency
+                wm_state = torch.tensor(wm_state)
+                wm_state = obs_minmax_normalizer.normalize_obs(wm_state)
+                #print("2", wm_state)
                 #obs_torch_minmaxnorm = obs_minmax_normalizer.normalize_obs(obs_torch)
                 dist = policy(obs_torch.unsqueeze(0))        # -> shape [1, 2*A]
                 #actions = dist.detach().numpy()     # -> shape [1, A]
@@ -232,3 +285,4 @@ if __name__ == "__main__":
             viewer.sync()
             it += 1
             gait_process = np.fmod(gait_process + cfg["sim"]["dt"] * gait_frequency, 1.0)
+

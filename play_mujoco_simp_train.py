@@ -64,7 +64,7 @@ class minmaxnormalizer():
         self.obs_limit_min[:, self.q_idxs] = torch.tensor([-1.8, -0.3, -1.0, 0.0, -0.87, -0.44, -1.8, -1.57, -1.0, 0.0, -0.87, -0.44], device=self.device) - 0.25
         self.obs_limit_max[:, self.q_idxs] = torch.tensor([1.57, 1.57, 1.0, 2.34, 0.35, 0.44, 1.57, 0.3, 1.0, 2.34, 0.35, 0.44], device=self.device) + 0.25
 
-        self.wm_q_idxs = [i for i in range(11, 23, 1)]
+        self.wm_q_idxs = [i for i in range(60, 72, 1)]
         self.obs_limit_min[:, self.wm_q_idxs] = torch.tensor([-1.8, -0.3, -1.0, 0.0, -0.87, -0.44, -1.8, -1.57, -1.0, 0.0, -0.87, -0.44], device=self.device) - 0.25
         self.obs_limit_max[:, self.wm_q_idxs] = torch.tensor([1.57, 1.57, 1.0, 2.34, 0.35, 0.44, 1.57, 0.3, 1.0, 2.34, 0.35, 0.44], device=self.device) + 0.25
 
@@ -217,7 +217,7 @@ def run_mujoco(policy, cfg, render: bool = False):
     gait_process = 0.0
     gait_frequency = np.average(cfg["commands"]["gait_frequency"])
     lin_vel_y = ang_vel_yaw = 0.0
-    lin_vel_x = 1.5
+    lin_vel_x = 0.6
     it = 0
     step = 0
     num_envs = 1
@@ -296,10 +296,10 @@ def run_mujoco(policy, cfg, render: bool = False):
             priv_state[obs_minmax_normalizer.priv_rpy_rate_idxs] = base_ang_vel
             priv_state[obs_minmax_normalizer.priv_gravity_idxs] = projected_gravity
             priv_state[obs_minmax_normalizer.priv_base_lin_vel_idxs] = base_lin_vel
+            priv_state[obs_minmax_normalizer.priv_global_ang_vel_idxs] = ang_vel_global
             priv_state[obs_minmax_normalizer.priv_q_idxs] = dof_pos
             priv_state[obs_minmax_normalizer.priv_qd_idxs] = dof_vel
             priv_state[obs_minmax_normalizer.priv_height_idx] = base_pos[2]
-            priv_state[obs_minmax_normalizer.priv_global_ang_vel_idxs] = ang_vel_global
             priv_state = torch.tensor(priv_state)
             dist = policy(obs_torch.unsqueeze(0))        # -> shape [1, 2*A]
             #actions = dist.detach().numpy()     # -> shape [1, A]
@@ -317,7 +317,7 @@ def run_mujoco(policy, cfg, render: bool = False):
         mujoco.mj_step(mj_model, mj_data)
         it += 1
         gait_process = np.fmod(gait_process + cfg["sim"]["dt"] * gait_frequency, 1.0)
-        if step == 1000 or base_pos[2] < 0.2:
+        if step == 1000 or base_pos[2] < 0.3:
             break
         if render:    
             viewer.cam.lookat[:] = mj_data.qpos.astype(np.float32)[0:3]
