@@ -89,6 +89,7 @@ class Controller:
     def _init_low_state_values(self):
         self.base_ang_vel = np.zeros(3, dtype=np.float32)
         self.global_ang_vel = np.zeros(3, dtype=np.float32)
+        self.global_lin_vel = np.zeros(3, dtype=np.float32)
         self.base_lin_vel = np.zeros(3, dtype=np.float32)
         self.acc = np.zeros(3, dtype=np.float32)
         self.acc_update_time = self.timer.get_time()
@@ -122,8 +123,20 @@ class Controller:
         time_now = self.timer.get_time()
         for i, motor in enumerate(low_state_msg.motor_state_serial):
             self.dof_pos_latest[i] = motor.q
-        self.acc = low_state_msg.imu_state.acc
-        self.base_lin_vel = self.base_lin_vel + self.acc * (time_now - self.acc_update_time)
+
+        r, p, y = low_state_msg.imu_state.rpy
+        acc_body = np.array(low_state_msg.imu_state.acc, dtype=np.float32)
+        a_world = rotate_vector_rpy(r, p, y, acc_body) + np.array([0.0, 0.0, -9.81], dtype=np.float32)
+
+        # 速度积分（注意 dt、漂移与零偏）
+        dt = max(0.0, time_now - self.acc_update_time)
+        self.global_lin_vel += a_world * dt
+        self.base_lin_vel = rotate_vector_inverse_rpy(
+                low_state_msg.imu_state.rpy[0],
+                low_state_msg.imu_state.rpy[1],
+                low_state_msg.imu_state.rpy[2],
+                self.global_lin_vel,
+            )
         self.acc_update_time = time_now
 
         if time_now >= self.next_inference_time:
