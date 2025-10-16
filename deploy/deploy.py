@@ -166,6 +166,17 @@ class Controller:
         if abs(low_state_msg.imu_state.rpy[0]) > 1.0 or abs(low_state_msg.imu_state.rpy[1]) > 1.0:
             self.logger.warning("IMU base rpy values are too large: {}".format(low_state_msg.imu_state.rpy))
             self.running = False
+        if self.step > 0:
+            if self.base_height < 0.4 or self.base_height > 0.7:
+                self.logger.warning("base height risk: {}".format(self.base_height))
+                self.running = False
+            elif controller.client.GetMode() == RobotMode.kDamping or controller.client.GetMode() == RobotMode.kPrepare:
+                self.logger.warning("robot mode: {}".format(controller.client.GetMode()))
+                self.running = False
+            elif self.step >= 1000: 
+                self.logger.warning("step > 1000")
+                self.running = False
+
         self.timer.tick_timer_if_sim()
         time_now = self.timer.get_time()
         for i, motor in enumerate(low_state_msg.motor_state_serial):
@@ -328,9 +339,6 @@ class Controller:
         )
         self.step += 1
 
-        # TODO: safe check and terminal here
-        if self.step >= 1000 and self.base_height<0.3:
-            pass
 
         inference_time = time.perf_counter()
         self.logger.debug(f"Inference took {(inference_time - start_time)*1000:.4f} ms")
