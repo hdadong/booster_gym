@@ -26,8 +26,8 @@ from utils.timer import TimerConfig, Timer
 from utils.policy import Policy
 from utils.policy_simp import Policy as Policy_simp
 from utils.tcp_server import send_checkpoint_until_success, BackgroundFileServer
-
-def get_latest_policy_path(policy_dir: str) -> Optional[str]:
+from utils.vicon import Vicon
+def get_latest_policy_path(policy_dir):
     """
     从目录中查找形如 policy_<number>.pt 的权重文件，按<number>数值取最新。
     若目录不存在或无匹配文件，则返回 None。
@@ -146,7 +146,7 @@ class Controller:
         self.quat_wxyz = np.array([1, 0, 0, 0], dtype=np.float32)
         self.dof_pos = np.zeros(B1JointCnt, dtype=np.float32)
         self.dof_vel = np.zeros(B1JointCnt, dtype=np.float32)
-
+        self.torques = np.zeros(B1JointCnt, dtype=np.float32)
         self.dof_target = np.zeros(B1JointCnt, dtype=np.float32)
         self.filtered_dof_target = np.zeros(B1JointCnt, dtype=np.float32)
         self.dof_pos_latest = np.zeros(B1JointCnt, dtype=np.float32)
@@ -170,11 +170,11 @@ class Controller:
             self.logger.warning("IMU base rpy values are too large: {}".format(low_state_msg.imu_state.rpy))
             self.running = False
         if self.step > 0:
-            if self.base_height < 0.4 or self.base_height > 0.7:
-                self.logger.warning("base height risk: {}".format(self.base_height))
+            if self.body_height < 0.4 or self.body_height > 0.7:
+                self.logger.warning("base height risk: {}".format(self.body_heightt))
                 self.running = False
-            elif controller.client.GetMode() == RobotMode.kDamping or controller.client.GetMode() == RobotMode.kPrepare:
-                self.logger.warning("robot mode: {}".format(controller.client.GetMode()))
+            elif self.client.GetMode() == RobotMode.kDamping or self.client.GetMode() == RobotMode.kPrepare:
+                self.logger.warning("robot mode: {}".format(self.client.GetMode()))
                 self.running = False
             elif self.step >= 1000: 
                 self.logger.warning("step > 1000")
@@ -184,6 +184,7 @@ class Controller:
         time_now = self.timer.get_time()
         for i, motor in enumerate(low_state_msg.motor_state_serial):
             self.dof_pos_latest[i] = motor.q
+            self.torques[i] = motor.tau_est
 
         r, p, y = low_state_msg.imu_state.rpy
         acc_body = np.array(low_state_msg.imu_state.acc, dtype=np.float32)
@@ -250,12 +251,13 @@ class Controller:
         # use the latest available targets; filtered or raw depending on your preference
         row.extend(self.filtered_dof_target.tolist())
 
-        with self.csv_lock and self.step != 0::
-            self.csv_writer.writerow(row)
-            self._csv_rows_written += 1
-            # flush occasionally to avoid data loss but keep IO reasonable
-            if self._csv_rows_written % 100 == 0:
-                self.csv_file.flush()
+        if self.step != 0: 
+            with self.csv_lock:
+                self.csv_writer.writerow(row)
+                self._csv_rows_written += 1
+                # flush occasionally to avoid data loss but keep IO reasonable
+                if self._csv_rows_written % 100 == 0:
+                    self.csv_file.flush()
 
     def _send_cmd(self, cmd: LowCmd):
         self.low_cmd_publisher.Write(cmd)
@@ -323,7 +325,7 @@ class Controller:
             self.data_buffers[0]['wm_state'].append(self.policy.wm_obs)
             self.data_buffers[0]['priv_state'].append(self.policy.priv_obs)
             self.data_buffers[0]['actions'].append(self.policy.actions)
-            self.data_buffers[0]['torques'].append(torque)
+            self.data_buffers[0]['torques'].append(self.torques[:11])
             self.data_buffers[0]['contacts'].append([0.0,0.0])
             self.data_buffers[0]['rewards'].append(0)
             self.data_buffers[0]['timestamps'].append(0)
@@ -334,12 +336,12 @@ class Controller:
             dof_vel=self.dof_vel,
             base_ang_vel=self.base_ang_vel,
             projected_gravity=self.projected_gravity,
-            vx=self.remoteControlService.get_vx_cmd(),
+            vx=0.3,#self.remoteControlService.get_vx_cmd(),
             vy=self.remoteControlService.get_vy_cmd(),
             vyaw=self.remoteControlService.get_vyaw_cmd(),
             quat_wxyz=self.quat_wxyz, 
             base_lin_vel=self.base_lin_vel, 
-            base_height=self.base_height, 
+            body_height=self.body_height, 
             ang_vel_global=self.global_ang_vel
         )
         self.step += 1
@@ -385,7 +387,7 @@ class Controller:
     def __exit__(self, *args) -> None:
         self.cleanup()
 
-def run_real(cfg_file, policy_path)
+def run_real(cfg_file, policy_path):
     print(f"Starting custom controller, connecting to {args.net} ...")
     ChannelFactory.Instance().Init(0, args.net)
 
@@ -426,7 +428,7 @@ if __name__ == "__main__":
     base_data_dir = os.path.join('./lift_data/data_' + datetime.now().strftime('%Y%m%d_%H%M%S'))
     os.makedirs(base_data_dir, exist_ok=True)
 
-    real_data_dir = os.path.join(base_data_dir, real_data_dir)
+    real_data_dir = os.path.join(base_data_dir, 'real_data_dir')
     os.makedirs(real_data_dir, exist_ok=True)
 
 
@@ -436,7 +438,7 @@ if __name__ == "__main__":
     flag_policy_train = os.path.join(base_data_dir, 'flag_policy_train.flag')
 
     policy_set = set()
-
+    policy_set.add(None)
     policy_dir = os.path.join(base_data_dir, 'policy_ckpt')
     policy_server = BackgroundFileServer(host="0.0.0.0", port=9001, save_dir=policy_dir)
     policy_server.start() 
@@ -485,7 +487,7 @@ if __name__ == "__main__":
             send_checkpoint_until_success(
             ip=training_server,
             port=data_port,
-            file_path=npz_path,
+            file_path=npz_filename,
             )
             data_buffers[env_id]['state'].clear()
             data_buffers[env_id]['wm_state'].clear()

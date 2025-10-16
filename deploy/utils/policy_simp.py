@@ -85,7 +85,7 @@ class Policy:
         self.policy_interval = self.cfg["common"]["dt"] * self.cfg["policy"]["control"]["decimation"]
 
     def inference(self, time_now, dof_pos, dof_vel, base_ang_vel, projected_gravity, vx, vy, vyaw, 
-                  quat_wxyz, base_lin_vel, base_height, ang_vel_global):
+                  quat_wxyz, base_lin_vel, body_height, ang_vel_global):
         self.gait_process = np.fmod(time_now * self.gait_frequency, 1.0)
         self.commands[0] = vx
         self.commands[1] = vy
@@ -120,9 +120,9 @@ class Policy:
         self.wm_obs[self.wmobs_minmax_normalizer.wm_gravity_idxs] = projected_gravity
         self.wm_obs[self.wmobs_minmax_normalizer.wm_quat_idxs] = quat_wxyz
         self.wm_obs[self.wmobs_minmax_normalizer.wm_base_vel_idxs] = base_lin_vel
-        self.wm_obs[self.wmobs_minmax_normalizer.wm_q_idxs] = dof_pos
-        self.wm_obs[self.wmobs_minmax_normalizer.wm_qd_idxs] = dof_vel
-        self.wm_obs[self.wmobs_minmax_normalizer.wm_height_idx] = base_height
+        self.wm_obs[self.wmobs_minmax_normalizer.wm_q_idxs] = dof_pos[11:]
+        self.wm_obs[self.wmobs_minmax_normalizer.wm_qd_idxs] = dof_vel[11:]
+        self.wm_obs[self.wmobs_minmax_normalizer.wm_height_idx] = body_height
         self.wm_obs[self.wmobs_minmax_normalizer.wm_gait_process_idx] = self.gait_process
         self.wm_obs[self.wmobs_minmax_normalizer.wm_gait_frequency_idx] = self.gait_frequency
         self.wm_obs = self.wmobs_minmax_normalizer.normalize_obs(self.wm_obs)[0]
@@ -133,9 +133,9 @@ class Policy:
         self.priv_obs[self.wmobs_minmax_normalizer.priv_gravity_idxs] = projected_gravity
         self.priv_obs[self.wmobs_minmax_normalizer.priv_base_lin_vel_idxs] = base_lin_vel
         self.priv_obs[self.wmobs_minmax_normalizer.priv_global_ang_vel_idxs] = ang_vel_global
-        self.priv_obs[self.wmobs_minmax_normalizer.priv_q_idxs] = dof_pos
-        self.priv_obs[self.wmobs_minmax_normalizer.priv_qd_idxs] = dof_vel
-        self.priv_obs[self.wmobs_minmax_normalizer.priv_height_idx] = base_height
+        self.priv_obs[self.wmobs_minmax_normalizer.priv_q_idxs] = dof_pos[11:]
+        self.priv_obs[self.wmobs_minmax_normalizer.priv_qd_idxs] = dof_vel[11:]
+        self.priv_obs[self.wmobs_minmax_normalizer.priv_height_idx] = body_height
 
         
         obs_torch = torch.tensor(self.obs)
