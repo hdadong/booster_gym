@@ -96,7 +96,7 @@ class TcpServer:
 
 class Vicon:
     def __init__(self):
-        self.server = TcpServer("0.0.0.0", 8800)
+        self.server = TcpServer("0.0.0.0", 8801)
         self.position = np.zeros(3)
         self.rotation = np.zeros(4)
         self.rpy = np.zeros(3)

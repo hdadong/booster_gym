@@ -17,6 +17,7 @@ from booster_robotics_sdk_python import (
     LowState,
     B1JointCnt,
     RobotMode,
+    GetModeResponse,
 )
 
 from utils.command import create_prepare_cmd, create_first_frame_rl_cmd
@@ -166,19 +167,10 @@ class Controller:
             raise
 
     def _low_state_handler(self, low_state_msg: LowState):
-        if abs(low_state_msg.imu_state.rpy[0]) > 1.0 or abs(low_state_msg.imu_state.rpy[1]) > 1.0:
+        if abs(low_state_msg.imu_state.rpy[0]) > 0.785 or abs(low_state_msg.imu_state.rpy[1]) > 0.785:
             self.logger.warning("IMU base rpy values are too large: {}".format(low_state_msg.imu_state.rpy))
             self.running = False
-        if self.step > 0:
-            if self.body_height < 0.4 or self.body_height > 0.7:
-                self.logger.warning("base height risk: {}".format(self.body_heightt))
-                self.running = False
-            elif self.client.GetMode() == RobotMode.kDamping or self.client.GetMode() == RobotMode.kPrepare:
-                self.logger.warning("robot mode: {}".format(self.client.GetMode()))
-                self.running = False
-            elif self.step >= 1000: 
-                self.logger.warning("step > 1000")
-                self.running = False
+
 
         self.timer.tick_timer_if_sim()
         time_now = self.timer.get_time()
@@ -201,6 +193,22 @@ class Controller:
             )
         self.acc_update_time = time_now
         self.body_height = self.vicon.position[2]
+        gm: GetModeResponse = GetModeResponse()
+        res = self.client.GetMode(gm)
+        if self.step > 0:
+            if self.body_height < 0.4 or self.body_height > 0.7:
+                self.logger.warning("body height risk: {}".format(self.body_height))
+                self.running = False
+
+            elif res == RobotMode.kDamping or res == RobotMode.kPrepare:
+                self.logger.warning("robot mode: {}".format(res))
+                self.running = False
+            elif abs(self.global_lin_vel[0]) > 2.0 or abs(self.global_lin_vel[1]) > 2.0 or abs(self.global_lin_vel[2]) > 2.0:
+                self.logger.warning("global vel: {}".format(self.global_lin_vel))
+                self.running = False
+            elif self.step >= 1000: 
+                self.logger.warning("step > 1000")
+                self.running = False
 
         if time_now >= self.next_inference_time:
             self.projected_gravity[:] = rotate_vector_inverse_rpy(
@@ -440,6 +448,8 @@ if __name__ == "__main__":
     policy_set = set()
     policy_set.add(None)
     policy_dir = os.path.join(base_data_dir, 'policy_ckpt')
+    os.makedirs(policy_dir, exist_ok=True)
+
     policy_server = BackgroundFileServer(host="0.0.0.0", port=9001, save_dir=policy_dir)
     policy_server.start() 
     
