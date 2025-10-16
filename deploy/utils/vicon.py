@@ -96,7 +96,7 @@ class TcpServer:
 
 class Vicon:
     def __init__(self):
-        self.server = TcpServer("192.168.10.10", 8800)
+        self.server = TcpServer("0.0.0.0", 8800)
         self.position = np.zeros(3)
         self.rotation = np.zeros(4)
         self.rpy = np.zeros(3)
@@ -123,7 +123,7 @@ class Vicon:
 
     def update_states(self, data):
         self.position = data[0:3]
-        self.velocity = global_to_local_velocity(data[3:6], data[9:13])
+        self.velocity = data[3:6]#global_to_local_velocity(data[3:6], data[9:13])
         self.velocity2 = data[3:6]
 
         self.rpy = data[6:9]

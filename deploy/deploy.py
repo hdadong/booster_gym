@@ -77,6 +77,9 @@ class Controller:
             {key: [] for key in data_dict}  # Create a new dictionary with the same structure
             for _ in range(num_envs)
         ]
+        self.last_logged_tick = float('-inf')   # guard to avoid duplicate rows per tick
+        self.csv_lock = threading.Lock()
+        self.vicon = Vicon()
 
         # Load config
         with open(cfg_file, "r", encoding="utf-8") as f:
@@ -98,7 +101,6 @@ class Controller:
 
         self.publish_lock = threading.Lock()
         self._init_csv_logger()
-        self.last_logged_tick = float('-inf')   # guard to avoid duplicate rows per tick
 
     def _init_csv_logger(self):
         # directory + filename
@@ -116,6 +118,7 @@ class Controller:
         tgt_cols = [f"target_{i}" for i in range(B1JointCnt)]
         header = (
             ["t",
+            "body_height",
             "vx_cmd","vy_cmd","vyaw_cmd",
             "rpy_roll","rpy_pitch","rpy_yaw",
             "acc_x","acc_y","acc_z",
@@ -147,7 +150,7 @@ class Controller:
         self.dof_target = np.zeros(B1JointCnt, dtype=np.float32)
         self.filtered_dof_target = np.zeros(B1JointCnt, dtype=np.float32)
         self.dof_pos_latest = np.zeros(B1JointCnt, dtype=np.float32)
-
+        self.body_height = 0.0
     def _init_communication(self) -> None:
         try:
             self.low_cmd = LowCmd()
@@ -196,6 +199,7 @@ class Controller:
                 self.global_lin_vel,
             )
         self.acc_update_time = time_now
+        self.body_height = self.vicon.position[2]
 
         if time_now >= self.next_inference_time:
             self.projected_gravity[:] = rotate_vector_inverse_rpy(
@@ -229,6 +233,7 @@ class Controller:
 
         row = [
             t,
+            self.body_height,
             self.remoteControlService.get_vx_cmd(),
             self.remoteControlService.get_vy_cmd(),
             self.remoteControlService.get_vyaw_cmd(),
@@ -434,7 +439,7 @@ if __name__ == "__main__":
 
     policy_dir = os.path.join(base_data_dir, 'policy_ckpt')
     policy_server = BackgroundFileServer(host="0.0.0.0", port=9001, save_dir=policy_dir)
-    policy_server.start()
+    policy_server.start() 
     
 
     while True:
