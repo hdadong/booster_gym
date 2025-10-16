@@ -168,7 +168,7 @@ class Controller:
 
     def _low_state_handler(self, low_state_msg: LowState):
         if abs(low_state_msg.imu_state.rpy[0]) > 0.785 or abs(low_state_msg.imu_state.rpy[1]) > 0.785:
-            self.logger.warning("IMU base rpy values are too large: {}".format(low_state_msg.imu_state.rpy))
+            #self.logger.warning("IMU base rpy values are too large: {}".format(low_state_msg.imu_state.rpy))
             self.running = False
 
 
@@ -178,39 +178,42 @@ class Controller:
             self.dof_pos_latest[i] = motor.q
             self.torques[i] = motor.tau_est
 
-        r, p, y = low_state_msg.imu_state.rpy
-        acc_body = np.array(low_state_msg.imu_state.acc, dtype=np.float32)
-        a_world = rotate_vector_rpy(r, p, y, acc_body) + np.array([0.0, 0.0, -9.81], dtype=np.float32)
 
-        # 速度积分（注意 dt、漂移与零偏）
-        dt = max(0.0, time_now - self.acc_update_time)
-        self.global_lin_vel += a_world * dt
-        self.base_lin_vel = rotate_vector_inverse_rpy(
-                low_state_msg.imu_state.rpy[0],
-                low_state_msg.imu_state.rpy[1],
-                low_state_msg.imu_state.rpy[2],
-                self.global_lin_vel,
-            )
-        self.acc_update_time = time_now
-        self.body_height = self.vicon.position[2]
-        gm: GetModeResponse = GetModeResponse()
-        res = self.client.GetMode(gm)
-        if self.step > 0:
-            if self.body_height < 0.4 or self.body_height > 0.7:
-                self.logger.warning("body height risk: {}".format(self.body_height))
-                self.running = False
-
-            elif res == RobotMode.kDamping or res == RobotMode.kPrepare:
-                self.logger.warning("robot mode: {}".format(res))
-                self.running = False
-            elif abs(self.global_lin_vel[0]) > 2.0 or abs(self.global_lin_vel[1]) > 2.0 or abs(self.global_lin_vel[2]) > 2.0:
-                self.logger.warning("global vel: {}".format(self.global_lin_vel))
-                self.running = False
-            elif self.step >= 1000: 
-                self.logger.warning("step > 1000")
-                self.running = False
 
         if time_now >= self.next_inference_time:
+            r, p, y = low_state_msg.imu_state.rpy
+            acc_body = np.array(low_state_msg.imu_state.acc, dtype=np.float32)
+            a_world = rotate_vector_rpy(r, p, y, acc_body) + np.array([0.0, 0.0, -9.81], dtype=np.float32)
+
+            # 速度积分（注意 dt、漂移与零偏）
+            dt = max(0.0, time_now - self.acc_update_time)
+            self.global_lin_vel += a_world * dt
+            self.base_lin_vel = rotate_vector_inverse_rpy(
+                    low_state_msg.imu_state.rpy[0],
+                    low_state_msg.imu_state.rpy[1],
+                    low_state_msg.imu_state.rpy[2],
+                    self.global_lin_vel,
+                )
+            self.acc_update_time = time_now
+            self.body_height = self.vicon.position[2]
+            # gm: GetModeResponse = GetModeResponse()
+            # res = self.client.GetMode(gm)
+            if self.step > 0:
+                if self.body_height < 0.4 or self.body_height > 0.7:
+                    self.logger.warning("body height risk: {}".format(self.body_height))
+                    self.running = False
+                # elif res == RobotMode.kDamping or res == RobotMode.kPrepare:
+                #     self.logger.warning("robot mode: {}".format(res))
+                #     self.running = False
+                elif abs(self.global_lin_vel[0]) > 2.0 or abs(self.global_lin_vel[1]) > 2.0 or abs(self.global_lin_vel[2]) > 2.0:
+                    self.logger.warning("global vel: {}".format(self.global_lin_vel))
+                    self.running = False
+                elif self.step >= 1000: 
+                    self.logger.warning("step > 1000")
+                    self.running = False
+                elif abs(low_state_msg.imu_state.rpy[0]) > 0.785 or abs(low_state_msg.imu_state.rpy[1]) > 0.785:
+                    self.logger.warning("IMU base rpy values are too large: {}".format(low_state_msg.imu_state.rpy))
+                    self.running = False
             self.projected_gravity[:] = rotate_vector_inverse_rpy(
                 low_state_msg.imu_state.rpy[0],
                 low_state_msg.imu_state.rpy[1],
@@ -344,7 +347,7 @@ class Controller:
             dof_vel=self.dof_vel,
             base_ang_vel=self.base_ang_vel,
             projected_gravity=self.projected_gravity,
-            vx=0.3,#self.remoteControlService.get_vx_cmd(),
+            vx=self.remoteControlService.get_vx_cmd(),
             vy=self.remoteControlService.get_vy_cmd(),
             vyaw=self.remoteControlService.get_vyaw_cmd(),
             quat_wxyz=self.quat_wxyz, 
@@ -408,11 +411,23 @@ def run_real(cfg_file, policy_path):
         try:
             while controller.running:
                 controller.run()
-            controller.client.ChangeMode(RobotMode.kDamping)
+            if controller.step >= 1000:
+                controller.client.ChangeMode(RobotMode.kPrepare)
+            else:
+                controller.client.ChangeMode(RobotMode.kDamping)
+            return controller.step, controller.data_buffers
+
         except KeyboardInterrupt:
             print("\nKeyboard interrupt received. Cleaning up...")
             controller.cleanup()
-        return controller.step, controller.data_buffers
+            return controller.step, controller.data_buffers
+
+def confirm_continue():
+    try:
+        s = input("press Y to continue").strip()
+    except EOFError:
+        return False
+    return s.lower() == 'y'
 
 if __name__ == "__main__":
     import argparse
@@ -441,9 +456,10 @@ if __name__ == "__main__":
 
 
     training_server = '10.1.108.171'
+    flat_port = 9002
     data_port = 9003
 
-    flag_policy_train = os.path.join(base_data_dir, 'flag_policy_train.flag')
+    flag_policy_train = os.path.join(base_data_dir, 'policy_train.flag')
 
     policy_set = set()
     policy_set.add(None)
@@ -460,7 +476,7 @@ if __name__ == "__main__":
         episode_num = 0
         policy_path = None
 
-        while policy_path is None and policy_path in policy_set:
+        while policy_path is None or policy_path in policy_set:
             policy_path = get_latest_policy_path(policy_dir)
             time.sleep(3)
         
@@ -468,12 +484,13 @@ if __name__ == "__main__":
         print("load the policy:", policy_path)
 
         while total_step < 1000:
-            
+            while not confirm_continue():
+                pass
             episode_step, data_buffers = run_real(cfg_file, policy_path)
 
             npz_filename = os.path.join(
                 real_data_dir,
-                f'env_{env_id}_data_{episode_num}.npz',
+                f'env_{episode_num}_data_{episode_step}.npz',
             )
             state_array = np.array(data_buffers[env_id]['state'], dtype=np.float32)
             wm_state_array = np.array(data_buffers[env_id]['wm_state'], dtype=np.float32)
@@ -509,10 +526,11 @@ if __name__ == "__main__":
             data_buffers[env_id]['timestamps'].clear()
             episode_num += 1
             total_step += episode_step
+            
         open(flag_policy_train, 'w').close()
         send_checkpoint_until_success(
         ip=training_server,
-        port=data_port,
+        port=flat_port,
         file_path=flag_policy_train,
         )
 
