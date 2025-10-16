@@ -38,6 +38,8 @@ policy:
   policy_path: "./models/policy_0.pt"
   num_actions: 12
   num_observations: 47
+  num_wm_observations: 87
+  num_priv_observations: 84
   gait_frequency: 1.5
 
   normalization:

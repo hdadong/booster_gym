@@ -4,69 +4,8 @@ import torch
 from torch.distributions import Normal
 import torch
 import torch.nn.functional as F
+from utils.normalize import minmaxnormalizer
 
-class minmaxnormalizer():
-    def __init__(self):
-        self.device='cpu'
-        # Normalization limits
-        self.obs_limit_min = torch.full((1, 47), -1.0, device=self.device)  # Min values
-        self.obs_limit_max = torch.full((1, 47), 1.0, device=self.device)   # Max values
-
-        indice_dof_pos = [i for i in range(11, 23, 1)]
-        self.obs_limit_min[:, indice_dof_pos] = torch.tensor([-1.8, -0.3, -1.0, 0.0, -0.87, -0.44, -1.8, -1.57, -1.0, 0.0, -0.87, -0.44], device=self.device) - 0.25
-        self.obs_limit_max[:, indice_dof_pos] = torch.tensor([1.57, 1.57, 1.0, 2.34, 0.35, 0.44, 1.57, 0.3, 1.0, 2.34, 0.35, 0.44], device=self.device) + 0.25
-
-        # indice_dof_pos = [i for i in range(60, 72, 1)]
-        # self.obs_limit_min[:, indice_dof_pos] = torch.tensor([-1.8, -0.3, -1.0, 0.0, -0.87, -0.44, -1.8, -1.57, -1.0, 0.0, -0.87, -0.44], device=self.device) - 0.25
-        # self.obs_limit_max[:, indice_dof_pos] = torch.tensor([1.57, 1.57, 1.0, 2.34, 0.35, 0.44, 1.57, 0.3, 1.0, 2.34, 0.35, 0.44], device=self.device) + 0.25
-
-        # self._forward_vel_idx = 53
-        # self.obs_limit_min[:, self._forward_vel_idx] = 0.0
-        # self.obs_limit_max[:, self._forward_vel_idx] = 0.5
-
-        # self._y_vel_idx = 58
-        # self.obs_limit_min[:, self._y_vel_idx] = -0.5
-        # self.obs_limit_max[:, self._y_vel_idx] = 0.5
-
-        # self._z_vel_idx = 59
-        # self.obs_limit_min[:, self._z_vel_idx] = -0.5
-        # self.obs_limit_max[:, self._z_vel_idx] = 0.5
-
-        self._roll_rate_idx = 3
-        self._pitch_rate_idx = 4
-        self._turn_rate_idx = 5
-        self._rpy_rate_idxs = [i for i in range(self._roll_rate_idx, self._turn_rate_idx+1, 1)]
-        self.obs_limit_min[:, self._rpy_rate_idxs] = torch.tensor([-1.5, -1.5, -1.5], device=self.device)
-        self.obs_limit_max[:, self._rpy_rate_idxs] = torch.tensor([1.5, 1.5, 1.5], device=self.device)
-
-        # self._priv_roll_rate_idx = 47
-        # self._priv_pitch_rate_idx = 48
-        # self._priv_turn_rate_idx = 49
-        # self._priv_rpy_rate_idxs = [i for i in range(self._priv_roll_rate_idx, self._priv_turn_rate_idx+1, 1)]
-        # self.obs_limit_min[:, self._priv_rpy_rate_idxs] = torch.tensor([-1.5, -1.5, -1.5], device=self.device)
-        # self.obs_limit_max[:, self._priv_rpy_rate_idxs] = torch.tensor([1.5, 1.5, 1.5], device=self.device)
-
-        self._qd_idxs = [i for i in range(23, 35, 1)]
-        self.obs_limit_min[:, self._qd_idxs] = -20.0
-        self.obs_limit_max[:, self._qd_idxs] = 20
-
-        # self._qd_idxs = [i for i in range(72, 84, 1)]
-        # self.obs_limit_min[:, self._qd_idxs] = -20.0
-        # self.obs_limit_max[:, self._qd_idxs] = 20
-
-        # indice_height = 84
-        # self.obs_limit_min[:, indice_height] = 0.0
-        # self.obs_limit_max[:, indice_height] = 0.8
-
-    def normalize_obs(self, obs):
-        # Normalize observation
-        normalized_obs = 2 * (obs - self.obs_limit_min) / (self.obs_limit_max - self.obs_limit_min) - 1
-        return normalized_obs
-
-    def denormalize_obs(self, normalize_obs):
-        obs = (normalize_obs + 1)*(self.obs_limit_max - self.obs_limit_min)/2 + self.obs_limit_min
-        return obs
-        
 
 class TanhBijector:
     """Tanh Bijector."""
@@ -110,12 +49,12 @@ class NormalTanhDistribution:
 
 
 class Policy:
-    def __init__(self, cfg):
+    def __init__(self, cfg, policy_path):
         try:
             self.cfg = cfg
-            self.policy = torch.jit.load(self.cfg["policy"]["policy_path"], map_location="cpu")
+            self.policy = torch.jit.load(policy_path, map_location="cpu")
             self.policy.eval()
-            self.obs_minmax_normalizer = minmaxnormalizer()
+            self.wmobs_minmax_normalizer = minmaxnormalizer()
             self.normalizer = NormalTanhDistribution()
 
         except Exception as e:
@@ -138,10 +77,15 @@ class Policy:
         self.gait_process = 0.0
         self.dof_targets = np.copy(self.default_dof_pos)
         self.obs = np.zeros(self.cfg["policy"]["num_observations"], dtype=np.float32)
+        self.wm_obs = np.zeros(self.cfg["policy"]["num_wm_observations"], dtype=np.float32)
+        self.priv_obs = np.zeros(self.cfg["policy"]["num_priv_observations"], dtype=np.float32)
+
+
         self.actions = np.zeros(self.cfg["policy"]["num_actions"], dtype=np.float32)
         self.policy_interval = self.cfg["common"]["dt"] * self.cfg["policy"]["control"]["decimation"]
 
-    def inference(self, time_now, dof_pos, dof_vel, base_ang_vel, projected_gravity, vx, vy, vyaw):
+    def inference(self, time_now, dof_pos, dof_vel, base_ang_vel, projected_gravity, vx, vy, vyaw, 
+                  quat_wxyz, base_lin_vel, base_height, ang_vel_global):
         self.gait_process = np.fmod(time_now * self.gait_frequency, 1.0)
         self.commands[0] = vx
         self.commands[1] = vy
@@ -169,9 +113,30 @@ class Policy:
         self.obs[10] = np.sin(2 * np.pi * self.gait_process) * (self.gait_frequency > 1.0e-8)
         self.obs[11:23] = dof_pos[11:]
         self.obs[23:35] = dof_vel[11:]
-        # self.obs[11:23] = (dof_pos - self.default_dof_pos)[11:] * self.cfg["policy"]["normalization"]["dof_pos"]
-        # self.obs[23:35] = dof_vel[11:] * self.cfg["policy"]["normalization"]["dof_vel"]
         self.obs[35:47] = self.actions
+
+        self.wm_obs[:self.obs.shape[0]] = self.obs
+        self.wm_obs[self.wmobs_minmax_normalizer.wm_rpy_rate_idxs] = base_ang_vel
+        self.wm_obs[self.wmobs_minmax_normalizer.wm_gravity_idxs] = projected_gravity
+        self.wm_obs[self.wmobs_minmax_normalizer.wm_quat_idxs] = quat_wxyz
+        self.wm_obs[self.wmobs_minmax_normalizer.wm_base_vel_idxs] = base_lin_vel
+        self.wm_obs[self.wmobs_minmax_normalizer.wm_q_idxs] = dof_pos
+        self.wm_obs[self.wmobs_minmax_normalizer.wm_qd_idxs] = dof_vel
+        self.wm_obs[self.wmobs_minmax_normalizer.wm_height_idx] = base_height
+        self.wm_obs[self.wmobs_minmax_normalizer.wm_gait_process_idx] = self.gait_process
+        self.wm_obs[self.wmobs_minmax_normalizer.wm_gait_frequency_idx] = self.gait_frequency
+        self.wm_obs = self.wmobs_minmax_normalizer.normalize_obs(self.wm_obs)[0]
+
+
+        self.priv_obs[:self.obs.shape[0]] = self.obs
+        self.priv_obs[self.wmobs_minmax_normalizer.priv_rpy_rate_idxs] = base_ang_vel
+        self.priv_obs[self.wmobs_minmax_normalizer.priv_gravity_idxs] = projected_gravity
+        self.priv_obs[self.wmobs_minmax_normalizer.priv_base_lin_vel_idxs] = base_lin_vel
+        self.priv_obs[self.wmobs_minmax_normalizer.priv_global_ang_vel_idxs] = ang_vel_global
+        self.priv_obs[self.wmobs_minmax_normalizer.priv_q_idxs] = dof_pos
+        self.priv_obs[self.wmobs_minmax_normalizer.priv_qd_idxs] = dof_vel
+        self.priv_obs[self.wmobs_minmax_normalizer.priv_height_idx] = base_height
+
         
         obs_torch = torch.tensor(self.obs)
         #obs_torch_minmaxnorm = self.obs_minmax_normalizer.normalize_obs(obs_torch)

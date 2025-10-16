@@ -6,7 +6,8 @@ import threading
 import csv
 from pathlib import Path
 from datetime import datetime
-
+import re
+import os 
 from booster_robotics_sdk_python import (
     ChannelFactory,
     B1LocoClient,
@@ -20,17 +21,62 @@ from booster_robotics_sdk_python import (
 
 from utils.command import create_prepare_cmd, create_first_frame_rl_cmd
 from utils.remote_control_service import RemoteControlService
-from utils.rotate import rotate_vector_inverse_rpy, rotate_vector_rpy
+from utils.rotate import rotate_vector_inverse_rpy, rotate_vector_rpy, rpy_zyx_to_quat_wxyz
 from utils.timer import TimerConfig, Timer
 from utils.policy import Policy
 from utils.policy_simp import Policy as Policy_simp
+from utils.tcp_server import send_checkpoint_until_success, BackgroundFileServer
 
+def get_latest_policy_path(policy_dir: str) -> Optional[str]:
+    """
+    从目录中查找形如 policy_<number>.pt 的权重文件，按<number>数值取最新。
+    若目录不存在或无匹配文件，则返回 None。
+    """
+    # 目录不存在
+    try:
+        names = os.listdir(policy_dir)
+    except FileNotFoundError:
+        return None
+
+    pattern = re.compile(r'^policy_(\d+)\.pt$')
+    candidates = []
+
+    for name in names:
+        m = pattern.match(name)
+        if m:
+            step = int(m.group(1))
+            candidates.append((step, name))
+
+    if not candidates:
+        return None
+
+    # 按数值排序，取最大
+    candidates.sort(key=lambda x: x[0])
+    latest_name = candidates[-1][1]
+    return os.path.join(policy_dir, latest_name)
 
 class Controller:
-    def __init__(self, cfg_file) -> None:
+    def __init__(self, cfg_file, policy_path) -> None:
         # Setup logging
         logging.basicConfig(level=logging.INFO)
         self.logger = logging.getLogger(__name__)
+
+        self.step = 0
+        num_envs = 1
+        data_dict =  {
+                'state': [],
+                'priv_state': [],
+                'wm_state': [],
+                'actions': [],
+                'torques': [],
+                'contacts': [],
+                'rewards': [],
+                'timestamps': []
+        } 
+        self.data_buffers = [
+            {key: [] for key in data_dict}  # Create a new dictionary with the same structure
+            for _ in range(num_envs)
+        ]
 
         # Load config
         with open(cfg_file, "r", encoding="utf-8") as f:
@@ -40,7 +86,7 @@ class Controller:
         self.remoteControlService = RemoteControlService()
         if self.cfg["common"]["use_simp"]:
             print("simp policy")
-            self.policy = Policy_simp(cfg=self.cfg)
+            self.policy = Policy_simp(cfg=self.cfg, policy_path=policy_path)
         else:
             self.policy = Policy(cfg=self.cfg)
 
@@ -94,6 +140,7 @@ class Controller:
         self.acc = np.zeros(3, dtype=np.float32)
         self.acc_update_time = self.timer.get_time()
         self.projected_gravity = np.zeros(3, dtype=np.float32)
+        self.quat_wxyz = np.array([1, 0, 0, 0], dtype=np.float32)
         self.dof_pos = np.zeros(B1JointCnt, dtype=np.float32)
         self.dof_vel = np.zeros(B1JointCnt, dtype=np.float32)
 
@@ -153,7 +200,7 @@ class Controller:
                 low_state_msg.imu_state.rpy[2],
                 low_state_msg.imu_state.gyro
             )
-            
+            self.quat_wxyz = rpy_zyx_to_quat_wxyz(roll=low_state_msg.imu_state.rpy[0], pitch=low_state_msg.imu_state.rpy[1], yaw=low_state_msg.imu_state.rpy[2])
             for i, motor in enumerate(low_state_msg.motor_state_serial):
                 self.dof_pos[i] = motor.q
                 self.dof_vel[i] = motor.dq
@@ -187,7 +234,7 @@ class Controller:
         # use the latest available targets; filtered or raw depending on your preference
         row.extend(self.filtered_dof_target.tolist())
 
-        with self.csv_lock:
+        with self.csv_lock and self.step != 0::
             self.csv_writer.writerow(row)
             self._csv_rows_written += 1
             # flush occasionally to avoid data loss but keep IO reasonable
@@ -255,6 +302,15 @@ class Controller:
         self.next_inference_time += self.policy.get_policy_interval()
         self.logger.debug(f"Next start time: {self.next_inference_time}")
         start_time = time.perf_counter()
+        if self.step != 0:
+            self.data_buffers[0]['state'].append(self.policy.obs)
+            self.data_buffers[0]['wm_state'].append(self.policy.wm_obs)
+            self.data_buffers[0]['priv_state'].append(self.policy.priv_obs)
+            self.data_buffers[0]['actions'].append(self.policy.actions)
+            self.data_buffers[0]['torques'].append(torque)
+            self.data_buffers[0]['contacts'].append([0.0,0.0])
+            self.data_buffers[0]['rewards'].append(0)
+            self.data_buffers[0]['timestamps'].append(0)
 
         self.dof_target[:] = self.policy.inference(
             time_now=time_now,
@@ -265,7 +321,16 @@ class Controller:
             vx=self.remoteControlService.get_vx_cmd(),
             vy=self.remoteControlService.get_vy_cmd(),
             vyaw=self.remoteControlService.get_vyaw_cmd(),
+            quat_wxyz=self.quat_wxyz, 
+            base_lin_vel=self.base_lin_vel, 
+            base_height=self.base_height, 
+            ang_vel_global=self.global_ang_vel
         )
+        self.step += 1
+
+        # TODO: safe check and terminal here
+        if self.step >= 1000 and self.base_height<0.3:
+            pass
 
         inference_time = time.perf_counter()
         self.logger.debug(f"Inference took {(inference_time - start_time)*1000:.4f} ms")
@@ -307,6 +372,24 @@ class Controller:
     def __exit__(self, *args) -> None:
         self.cleanup()
 
+def run_real(cfg_file, policy_path)
+    print(f"Starting custom controller, connecting to {args.net} ...")
+    ChannelFactory.Instance().Init(0, args.net)
+
+    with Controller(cfg_file, policy_path) as controller:
+        time.sleep(2)  # Wait for channels to initialize
+        print("Initialization complete.")
+        controller.start_custom_mode_conditionally()
+        controller.start_rl_gait_conditionally()
+
+        try:
+            while controller.running:
+                controller.run()
+            controller.client.ChangeMode(RobotMode.kDamping)
+        except KeyboardInterrupt:
+            print("\nKeyboard interrupt received. Cleaning up...")
+            controller.cleanup()
+        return controller.step, controller.data_buffers
 
 if __name__ == "__main__":
     import argparse
@@ -326,19 +409,85 @@ if __name__ == "__main__":
     args = parser.parse_args()
     cfg_file = os.path.join("configs", args.config)
 
-    print(f"Starting custom controller, connecting to {args.net} ...")
-    ChannelFactory.Instance().Init(0, args.net)
 
-    with Controller(cfg_file) as controller:
-        time.sleep(2)  # Wait for channels to initialize
-        print("Initialization complete.")
-        controller.start_custom_mode_conditionally()
-        controller.start_rl_gait_conditionally()
+    base_data_dir = os.path.join('./lift_data/data_' + datetime.now().strftime('%Y%m%d_%H%M%S'))
+    os.makedirs(base_data_dir, exist_ok=True)
 
-        try:
-            while controller.running:
-                controller.run()
-            controller.client.ChangeMode(RobotMode.kDamping)
-        except KeyboardInterrupt:
-            print("\nKeyboard interrupt received. Cleaning up...")
-            controller.cleanup()
+    real_data_dir = os.path.join(base_data_dir, real_data_dir)
+    os.makedirs(real_data_dir, exist_ok=True)
+
+
+    training_server = '10.1.108.171'
+    data_port = 9003
+
+    flag_policy_train = os.path.join(base_data_dir, 'flag_policy_train.flag')
+
+    policy_set = set()
+
+    policy_dir = os.path.join(base_data_dir, 'policy_ckpt')
+    policy_server = BackgroundFileServer(host="0.0.0.0", port=9001, save_dir=policy_dir)
+    policy_server.start()
+    
+
+    while True:
+        env_id = 0
+        total_step = 0
+        episode_num = 0
+        policy_path = None
+
+        while policy_path is None and policy_path in policy_set:
+            policy_path = get_latest_policy_path(policy_dir)
+            time.sleep(3)
+        
+        policy_set.add(policy_path)
+        print("load the policy:", policy_path)
+
+        while total_step < 1000:
+            
+            episode_step, data_buffers = run_real(cfg_file, policy_path)
+
+            npz_filename = os.path.join(
+                real_data_dir,
+                f'env_{env_id}_data_{episode_num}.npz',
+            )
+            state_array = np.array(data_buffers[env_id]['state'], dtype=np.float32)
+            wm_state_array = np.array(data_buffers[env_id]['wm_state'], dtype=np.float32)
+            priv_state_array = np.array(data_buffers[env_id]['priv_state'], dtype=np.float32)
+            actions_array = np.array(data_buffers[env_id]['actions'], dtype=np.float32)
+            torques_array = np.array(data_buffers[env_id]['torques'], dtype=np.float32)
+            contact_array = np.array(data_buffers[env_id]['contacts'], dtype=np.float32)
+            rewards_array = np.array(data_buffers[env_id]['rewards'], dtype=np.float32)
+            timestamps_array = np.array(data_buffers[env_id]['timestamps'], dtype=np.float64)
+            np.savez_compressed(
+                npz_filename,
+                states=state_array,
+                wm_states=wm_state_array,
+                priv_states=priv_state_array,
+                actions=actions_array,
+                torques=torques_array,
+                contacts=contact_array,
+                rewards=rewards_array,
+                timestamps=timestamps_array,
+            )
+            send_checkpoint_until_success(
+            ip=training_server,
+            port=data_port,
+            file_path=npz_path,
+            )
+            data_buffers[env_id]['state'].clear()
+            data_buffers[env_id]['wm_state'].clear()
+            data_buffers[env_id]['priv_state'].clear()
+            data_buffers[env_id]['actions'].clear()
+            data_buffers[env_id]['torques'].clear()
+            data_buffers[env_id]['contacts'].clear()
+            data_buffers[env_id]['rewards'].clear()
+            data_buffers[env_id]['timestamps'].clear()
+            episode_num += 1
+            total_step += episode_step
+        open(flag_policy_train, 'w').close()
+        send_checkpoint_until_success(
+        ip=training_server,
+        port=data_port,
+        file_path=flag_policy_train,
+        )
+
