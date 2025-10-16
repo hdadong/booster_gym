@@ -25,7 +25,7 @@ Follow these steps to set up your environment:
 2. Run the deployment script:
 
     ```sh
-    $ python deploy.py --config=T1.yaml --net=192.168.10.101
+    $ python3 deploy.py --config=T1.yaml --net=192.168.10.101
     ```
 
     - `--config`: Name of the configuration file, located in the `configs/` folder.

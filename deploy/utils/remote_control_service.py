@@ -8,7 +8,7 @@ import time
 
 @dataclass
 class JoystickConfig:
-    max_vx: float = 0.8
+    max_vx: float = 1.0
     max_vy: float = 0.6
     max_vyaw: float = 0.5
     control_threshold: float = 0.1
@@ -35,13 +35,13 @@ class RemoteControlService:
         self.config = config or JoystickConfig()
         self._lock = threading.Lock()
         self._running = True
-        try:
-            self._init_joystick()
-            self._start_joystick_thread()
-        except Exception as e:
-            print(f"{e}, downgrade to keyboard control")
-            self._init_keyboard_control()
-            self._start_keyboard_thread()
+        #try:
+            #self._init_joystick()
+            #self._start_joystick_thread()
+        #except Exception as e:
+        #print(f"{e}, downgrade to keyboard control")
+        self._init_keyboard_control()
+        self._start_keyboard_thread()
 
         self.vx = 0.0
         self.vy = 0.0
@@ -92,14 +92,11 @@ class RemoteControlService:
             old_y = self.vy
             self.vy += 0.1
             self.vy = min(self.vy, self.config.max_vy)
-            print(" self.config.max_vy",  self.config.max_vy)
             print(f"VY: {old_y:.1f} => {self.vy:.1f}")
         if key == "d":
             old_y = self.vy
             self.vy -= 0.1
             self.vy = max(self.vy, -self.config.max_vy)
-            print(" self.config.max_vy",  self.config.max_vy)
-
             print(f"VY: {old_y:.1f} => {self.vy:.1f}")
         if key == "q":
             old_yaw = self.vyaw
