@@ -1,6 +1,6 @@
 from typing import Optional
 import evdev
-from sshkeyboard import listen_keyboard
+from sshkeyboard import listen_keyboard, stop_listening
 import threading
 from dataclasses import dataclass
 import time
@@ -69,9 +69,17 @@ class RemoteControlService:
         self.keyboard_start_rl_gait = False
 
     def _start_keyboard_thread(self):
-        self.keyboard_runner = threading.Thread(target=listen_keyboard, args=(self._handle_keyboard_press,))
-        self.keyboard_runner.daemon = True
+        # 用包装函数，便于捕获异常和统一退出
+        self.keyboard_runner = threading.Thread(target=self._keyboard_loop, daemon=True)
         self.keyboard_runner.start()
+
+    def _keyboard_loop(self):
+        try:
+            # 显式使用命名参数
+            listen_keyboard(on_press=self._handle_keyboard_press)
+        except AssertionError as e:
+            # 如果还有遗留监听没停，会在这里看到更清晰的日志
+            print(f"[keyboard] listener already running: {e}")
 
     def _handle_keyboard_press(self, key):
         if key == "b":
@@ -230,12 +238,17 @@ class RemoteControlService:
     def close(self):
         """Clean up resources."""
         self._running = False
+        try:
+            stop_listening()
+        except Exception:
+            pass
         if hasattr(self, "joystick") and getattr(self, "joystick") != None:
             self.joystick.close()
         if hasattr(self, "joystick_runner") and getattr(self, "joystick_runner") != None:
             self.joystick_runner.join(timeout=1.0)
         if hasattr(self, "keyboard_runner") and getattr(self, "keyboard_runner") != None:
             self.keyboard_runner.join(timeout=1.0)
+            self.keyboard_runner = None
 
     def __enter__(self):
         return self

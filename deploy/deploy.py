@@ -57,11 +57,11 @@ def get_latest_policy_path(policy_dir):
     return os.path.join(policy_dir, latest_name)
 
 class Controller:
-    def __init__(self, cfg_file, policy_path) -> None:
+    def __init__(self, cfg_file, policy_path, max_episode_length) -> None:
         # Setup logging
         logging.basicConfig(level=logging.INFO)
         self.logger = logging.getLogger(__name__)
-
+        self.max_episode_length = max_episode_length
         self.step = 0
         num_envs = 1
         data_dict =  {
@@ -196,20 +196,16 @@ class Controller:
                 )
             self.acc_update_time = time_now
             self.body_height = self.vicon.position[2]
-            # gm: GetModeResponse = GetModeResponse()
-            # res = self.client.GetMode(gm)
+
             if self.step > 0:
-                if self.body_height < 0.4 or self.body_height > 0.7:
+                if self.body_height < 0.4 or self.body_height > 0.75:
                     self.logger.warning("body height risk: {}".format(self.body_height))
                     self.running = False
-                # elif res == RobotMode.kDamping or res == RobotMode.kPrepare:
-                #     self.logger.warning("robot mode: {}".format(res))
-                #     self.running = False
-                elif abs(self.global_lin_vel[0]) > 2.0 or abs(self.global_lin_vel[1]) > 2.0 or abs(self.global_lin_vel[2]) > 2.0:
+                elif abs(self.global_lin_vel[0]) > 10.0 or abs(self.global_lin_vel[1]) > 10.0 or abs(self.global_lin_vel[2]) > 10.0:
                     self.logger.warning("global vel: {}".format(self.global_lin_vel))
                     self.running = False
-                elif self.step >= 1000: 
-                    self.logger.warning("step > 1000")
+                elif self.step >= self.max_episode_length: 
+                    self.logger.warning("step > max_episode_length")
                     self.running = False
                 elif abs(low_state_msg.imu_state.rpy[0]) > 0.785 or abs(low_state_msg.imu_state.rpy[1]) > 0.785:
                     self.logger.warning("IMU base rpy values are too large: {}".format(low_state_msg.imu_state.rpy))
@@ -289,6 +285,8 @@ class Controller:
                 self.logger.info(f"CSV saved to {self.csv_path}")
             except Exception as e:
                 self.logger.warning(f"Error closing CSV: {e}")
+        if hasattr(self, "vicon"):
+            self.vicon.stop()
     def start_custom_mode_conditionally(self):
         print(f"{self.remoteControlService.get_custom_mode_operation_hint()}")
         while True:
@@ -347,7 +345,7 @@ class Controller:
             dof_vel=self.dof_vel,
             base_ang_vel=self.base_ang_vel,
             projected_gravity=self.projected_gravity,
-            vx=self.remoteControlService.get_vx_cmd(),
+            vx=0.1,#self.remoteControlService.get_vx_cmd(),
             vy=self.remoteControlService.get_vy_cmd(),
             vyaw=self.remoteControlService.get_vyaw_cmd(),
             quat_wxyz=self.quat_wxyz, 
@@ -355,6 +353,11 @@ class Controller:
             body_height=self.body_height, 
             ang_vel_global=self.global_ang_vel
         )
+        # gm: GetModeResponse = GetModeResponse()
+        # res = self.client.GetMode(gm)
+        # if gm.mode == RobotMode.kPrepare:
+        #     self.logger.warning("robot mode: {}".format(gm.mode))
+        #     self.running = False
         self.step += 1
 
 
@@ -398,11 +401,11 @@ class Controller:
     def __exit__(self, *args) -> None:
         self.cleanup()
 
-def run_real(cfg_file, policy_path):
+def run_real(cfg_file, policy_path, max_episode_length):
     print(f"Starting custom controller, connecting to {args.net} ...")
     ChannelFactory.Instance().Init(0, args.net)
 
-    with Controller(cfg_file, policy_path) as controller:
+    with Controller(cfg_file, policy_path, max_episode_length) as controller:
         time.sleep(2)  # Wait for channels to initialize
         print("Initialization complete.")
         controller.start_custom_mode_conditionally()
@@ -411,16 +414,50 @@ def run_real(cfg_file, policy_path):
         try:
             while controller.running:
                 controller.run()
-            if controller.step >= 1000:
+            if controller.step >= max_episode_length:
                 controller.client.ChangeMode(RobotMode.kPrepare)
             else:
-                controller.client.ChangeMode(RobotMode.kDamping)
+                controller.client.ChangeMode(RobotMode.kPrepare)
             return controller.step, controller.data_buffers
 
         except KeyboardInterrupt:
             print("\nKeyboard interrupt received. Cleaning up...")
-            controller.cleanup()
             return controller.step, controller.data_buffers
+def wait_for_yes():
+    """
+    在 /dev/tty 上阻塞等待用户输入 'y' 或 'Y' + Enter。
+    如果一时拿不到控制台，就每 0.5s 重试一次，不会刷屏。
+    """
+    import sys, time
+    prompt_printed = False
+    while True:
+        if not prompt_printed:
+            print("\nPress Y then Enter to continue: ", end="", flush=True)
+            prompt_printed = True
+
+        line = None
+        # 1) 优先用真正的 TTY
+        try:
+            with open('/dev/tty', 'r') as tty:
+                line = tty.readline()
+        except Exception:
+            # 2) 退而求其次：如果当前 stdin 还是 TTY，用它
+            try:
+                if sys.stdin and sys.stdin.isatty():
+                    line = sys.stdin.readline()
+            except Exception:
+                pass
+
+        if line is None:
+            time.sleep(0.5)   # 没拿到输入设备，稍等再试
+            continue
+
+        if line.strip().lower() == 'y':
+            print()  # 换行美观
+            return True
+
+        # 输入不是 Y，则给个简短提示，但不重复整行 prompt
+        print("\nType 'Y' and press Enter to continue: ", end="", flush=True)
 
 def confirm_continue():
     try:
@@ -454,7 +491,7 @@ if __name__ == "__main__":
     real_data_dir = os.path.join(base_data_dir, 'real_data_dir')
     os.makedirs(real_data_dir, exist_ok=True)
 
-
+    max_episode_length = 500
     training_server = '10.1.108.171'
     flat_port = 9002
     data_port = 9003
@@ -466,8 +503,7 @@ if __name__ == "__main__":
     policy_dir = os.path.join(base_data_dir, 'policy_ckpt')
     os.makedirs(policy_dir, exist_ok=True)
 
-    policy_server = BackgroundFileServer(host="0.0.0.0", port=9001, save_dir=policy_dir)
-    policy_server.start() 
+
     
 
     while True:
@@ -475,18 +511,19 @@ if __name__ == "__main__":
         total_step = 0
         episode_num = 0
         policy_path = None
-
+        policy_server = BackgroundFileServer(host="0.0.0.0", port=9001, save_dir=policy_dir)
+        policy_server.start() 
         while policy_path is None or policy_path in policy_set:
             policy_path = get_latest_policy_path(policy_dir)
             time.sleep(3)
         
         policy_set.add(policy_path)
         print("load the policy:", policy_path)
+        policy_server.stop()
+        while total_step < max_episode_length:
+            wait_for_yes()
 
-        while total_step < 1000:
-            while not confirm_continue():
-                pass
-            episode_step, data_buffers = run_real(cfg_file, policy_path)
+            episode_step, data_buffers = run_real(cfg_file, policy_path, max_episode_length)
 
             npz_filename = os.path.join(
                 real_data_dir,
@@ -500,25 +537,26 @@ if __name__ == "__main__":
             contact_array = np.array(data_buffers[env_id]['contacts'], dtype=np.float32)
             rewards_array = np.array(data_buffers[env_id]['rewards'], dtype=np.float32)
             timestamps_array = np.array(data_buffers[env_id]['timestamps'], dtype=np.float64)
-            if confirm_continue():
-                np.savez_compressed(
-                    npz_filename,
-                    states=state_array,
-                    wm_states=wm_state_array,
-                    priv_states=priv_state_array,
-                    actions=actions_array,
-                    torques=torques_array,
-                    contacts=contact_array,
-                    rewards=rewards_array,
-                    timestamps=timestamps_array,
-                )
-                send_checkpoint_until_success(
-                ip=training_server,
-                port=data_port,
-                file_path=npz_filename,
-                )
-                episode_num += 1
-                total_step += episode_step                
+            wait_for_yes()
+
+            np.savez_compressed(
+                npz_filename,
+                states=state_array,
+                wm_states=wm_state_array,
+                priv_states=priv_state_array,
+                actions=actions_array,
+                torques=torques_array,
+                contacts=contact_array,
+                rewards=rewards_array,
+                timestamps=timestamps_array,
+            )
+            send_checkpoint_until_success(
+            ip=training_server,
+            port=data_port,
+            file_path=npz_filename,
+            )
+            episode_num += 1
+            total_step += episode_step                
             data_buffers[env_id]['state'].clear()
             data_buffers[env_id]['wm_state'].clear()
             data_buffers[env_id]['priv_state'].clear()
