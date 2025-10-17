@@ -120,8 +120,8 @@ class Controller:
         header = (
             ["t",
             "body_height",
-            "vicon_lin_vx","vicon_lin_vy","vicon_lin_vz"
-            "base_lin_vx","base_lin_vy","base_lin_vz"
+            "vicon_lin_vx","vicon_lin_vy","vicon_lin_vz",
+            "base_lin_vx","base_lin_vy","base_lin_vz",
             "vx_cmd","vy_cmd","vyaw_cmd",
             "rpy_roll","rpy_pitch","rpy_yaw",
             "acc_x","acc_y","acc_z",
@@ -194,10 +194,10 @@ class Controller:
             )
         self.acc_update_time = time_now
 
+        self.body_height = self.vicon.position[2]
+        self.base_lin_vel_vicon = self.vicon.velocity
         if time_now >= self.next_inference_time:
 
-            self.body_height = self.vicon.position[2]
-            self.base_lin_vel_vicon = self.vicon.velocity
             if self.step > 0:
                 if self.body_height < 0.4 or self.body_height > 0.75:
                     self.logger.warning("body height risk: {}".format(self.body_height))
@@ -428,7 +428,7 @@ if __name__ == "__main__":
     real_data_dir = os.path.join(base_data_dir, 'real_data_dir')
     os.makedirs(real_data_dir, exist_ok=True)
 
-    max_episode_length = 500
+    max_episode_length = 3000
     training_server = '10.1.108.171'
     flat_port = 9002
     data_port = 9003
@@ -474,7 +474,6 @@ if __name__ == "__main__":
             contact_array = np.array(data_buffers[env_id]['contacts'], dtype=np.float32)
             rewards_array = np.array(data_buffers[env_id]['rewards'], dtype=np.float32)
             timestamps_array = np.array(data_buffers[env_id]['timestamps'], dtype=np.float64)
-            wait_for_yes()
 
             np.savez_compressed(
                 npz_filename,
@@ -487,6 +486,13 @@ if __name__ == "__main__":
                 rewards=rewards_array,
                 timestamps=timestamps_array,
             )
+            test_load = np.load(npz_filename)
+            for key in test_load:
+                if key == 'wm_states':
+                    print(f"{key}:")
+                    print(test_load[key][:,76])
+            wait_for_yes()
+
             send_checkpoint_until_success(
             ip=training_server,
             port=data_port,

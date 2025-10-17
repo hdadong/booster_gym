@@ -120,12 +120,14 @@ class Controller:
         header = (
             ["t",
             "body_height",
+            "vicon_lin_vx","vicon_lin_vy","vicon_lin_vz",
+            "base_lin_vx","base_lin_vy","base_lin_vz",
             "vx_cmd","vy_cmd","vyaw_cmd",
             "rpy_roll","rpy_pitch","rpy_yaw",
             "acc_x","acc_y","acc_z",
             "gyro_x","gyro_y","gyro_z",
             "proj_gx","proj_gy","proj_gz",
-            "base_lin_vx","base_lin_vy","base_lin_vz"]
+        ]
             + q_cols + dq_cols + tgt_cols
         )
         self.csv_writer.writerow(header)
@@ -140,6 +142,7 @@ class Controller:
         self.base_ang_vel = np.zeros(3, dtype=np.float32)
         self.global_ang_vel = np.zeros(3, dtype=np.float32)
         self.global_lin_vel = np.zeros(3, dtype=np.float32)
+        self.base_lin_vel_vicon = np.zeros(3, dtype=np.float32)
         self.base_lin_vel = np.zeros(3, dtype=np.float32)
         self.acc = np.zeros(3, dtype=np.float32)
         self.acc_update_time = self.timer.get_time()
@@ -179,23 +182,23 @@ class Controller:
             self.torques[i] = motor.tau_est
 
 
+        r, p, y = low_state_msg.imu_state.rpy
+        acc_body = np.array(low_state_msg.imu_state.acc, dtype=np.float32)
+        a_world = rotate_vector_rpy(r, p, y, acc_body) + np.array([0.0, 0.0, -9.81], dtype=np.float32)
+        # 速度积分（注意 dt、漂移与零偏）
+        dt = max(0.0, time_now - self.acc_update_time)
+        self.global_lin_vel += a_world * dt
+        self.base_lin_vel = rotate_vector_inverse_rpy(
+                low_state_msg.imu_state.rpy[0],
+                low_state_msg.imu_state.rpy[1],
+                low_state_msg.imu_state.rpy[2],
+                self.global_lin_vel,
+            )
+        self.acc_update_time = time_now
 
+        self.body_height = self.vicon.position[2]
+        self.base_lin_vel_vicon = self.vicon.velocity
         if time_now >= self.next_inference_time:
-            r, p, y = low_state_msg.imu_state.rpy
-            acc_body = np.array(low_state_msg.imu_state.acc, dtype=np.float32)
-            a_world = rotate_vector_rpy(r, p, y, acc_body) + np.array([0.0, 0.0, -9.81], dtype=np.float32)
-
-            # 速度积分（注意 dt、漂移与零偏）
-            dt = max(0.0, time_now - self.acc_update_time)
-            self.global_lin_vel += a_world * dt
-            self.base_lin_vel = rotate_vector_inverse_rpy(
-                    low_state_msg.imu_state.rpy[0],
-                    low_state_msg.imu_state.rpy[1],
-                    low_state_msg.imu_state.rpy[2],
-                    self.global_lin_vel,
-                )
-            self.acc_update_time = time_now
-            self.body_height = self.vicon.position[2]
 
             if self.step > 0:
                 if self.body_height < 0.4 or self.body_height > 0.75:
@@ -242,6 +245,8 @@ class Controller:
         row = [
             t,
             self.body_height,
+            self.base_lin_vel_vicon[0], self.base_lin_vel_vicon[1], self.base_lin_vel_vicon[2],
+            self.base_lin_vel[0], self.base_lin_vel[1], self.base_lin_vel[2],
             self.remoteControlService.get_vx_cmd(),
             self.remoteControlService.get_vy_cmd(),
             self.remoteControlService.get_vyaw_cmd(),
@@ -249,7 +254,6 @@ class Controller:
             acc[0], acc[1], acc[2],
             gyro[0], gyro[1], gyro[2],
             self.projected_gravity[0], self.projected_gravity[1], self.projected_gravity[2],
-            self.base_lin_vel[0], self.base_lin_vel[1], self.base_lin_vel[2],
         ]
 
         # joint arrays
@@ -349,7 +353,7 @@ class Controller:
             vy=self.remoteControlService.get_vy_cmd(),
             vyaw=self.remoteControlService.get_vyaw_cmd(),
             quat_wxyz=self.quat_wxyz, 
-            base_lin_vel=self.base_lin_vel, 
+            base_lin_vel=self.base_lin_vel_vicon, 
             body_height=self.body_height, 
             ang_vel_global=self.global_ang_vel
         )
@@ -537,7 +541,7 @@ if __name__ == "__main__":
             contact_array = np.array(data_buffers[env_id]['contacts'], dtype=np.float32)
             rewards_array = np.array(data_buffers[env_id]['rewards'], dtype=np.float32)
             timestamps_array = np.array(data_buffers[env_id]['timestamps'], dtype=np.float64)
-            wait_for_yes()
+
 
             np.savez_compressed(
                 npz_filename,
@@ -550,6 +554,7 @@ if __name__ == "__main__":
                 rewards=rewards_array,
                 timestamps=timestamps_array,
             )
+            wait_for_yes()
             send_checkpoint_until_success(
             ip=training_server,
             port=data_port,
