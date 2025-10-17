@@ -123,7 +123,7 @@ class Vicon:
 
     def update_states(self, data):
         self.position = data[0:3]
-        self.velocity = data[3:6]#global_to_local_velocity(data[3:6], data[9:13])
+        self.velocity = global_to_local_velocity(data[3:6], data[9:13])
         self.velocity2 = data[3:6]
 
         self.rpy = data[6:9]

@@ -120,12 +120,14 @@ class Controller:
         header = (
             ["t",
             "body_height",
+            "vicon_lin_vx","vicon_lin_vy","vicon_lin_vz"
+            "base_lin_vx","base_lin_vy","base_lin_vz"
             "vx_cmd","vy_cmd","vyaw_cmd",
             "rpy_roll","rpy_pitch","rpy_yaw",
             "acc_x","acc_y","acc_z",
             "gyro_x","gyro_y","gyro_z",
             "proj_gx","proj_gy","proj_gz",
-            "base_lin_vx","base_lin_vy","base_lin_vz"]
+            ]
             + q_cols + dq_cols + tgt_cols
         )
         self.csv_writer.writerow(header)
@@ -173,30 +175,29 @@ class Controller:
 
 
         self.timer.tick_timer_if_sim()
-        time_now = self.timer.get_time()
         for i, motor in enumerate(low_state_msg.motor_state_serial):
             self.dof_pos_latest[i] = motor.q
             self.torques[i] = motor.tau_est
 
-
+        r, p, y = low_state_msg.imu_state.rpy
+        acc_body = np.array(low_state_msg.imu_state.acc, dtype=np.float32)
+        a_world = rotate_vector_rpy(r, p, y, acc_body) + np.array([0.0, 0.0, -9.81], dtype=np.float32)
+        time_now = self.timer.get_time()
+        # 速度积分（注意 dt、漂移与零偏）
+        dt = max(0.0, time_now - self.acc_update_time)
+        self.global_lin_vel += a_world * dt
+        self.base_lin_vel = rotate_vector_inverse_rpy(
+                low_state_msg.imu_state.rpy[0],
+                low_state_msg.imu_state.rpy[1],
+                low_state_msg.imu_state.rpy[2],
+                self.global_lin_vel,
+            )
+        self.acc_update_time = time_now
 
         if time_now >= self.next_inference_time:
-            r, p, y = low_state_msg.imu_state.rpy
-            acc_body = np.array(low_state_msg.imu_state.acc, dtype=np.float32)
-            a_world = rotate_vector_rpy(r, p, y, acc_body) + np.array([0.0, 0.0, -9.81], dtype=np.float32)
 
-            # 速度积分（注意 dt、漂移与零偏）
-            dt = max(0.0, time_now - self.acc_update_time)
-            self.global_lin_vel += a_world * dt
-            self.base_lin_vel = rotate_vector_inverse_rpy(
-                    low_state_msg.imu_state.rpy[0],
-                    low_state_msg.imu_state.rpy[1],
-                    low_state_msg.imu_state.rpy[2],
-                    self.global_lin_vel,
-                )
-            self.acc_update_time = time_now
             self.body_height = self.vicon.position[2]
-
+            self.base_lin_vel_vicon = self.vicon.velocity
             if self.step > 0:
                 if self.body_height < 0.4 or self.body_height > 0.75:
                     self.logger.warning("body height risk: {}".format(self.body_height))
@@ -242,6 +243,8 @@ class Controller:
         row = [
             t,
             self.body_height,
+            self.base_lin_vel_vicon[0], self.base_lin_vel_vicon[1], self.base_lin_vel_vicon[2],
+            self.base_lin_vel[0], self.base_lin_vel[1], self.base_lin_vel[2],
             self.remoteControlService.get_vx_cmd(),
             self.remoteControlService.get_vy_cmd(),
             self.remoteControlService.get_vyaw_cmd(),
@@ -249,7 +252,6 @@ class Controller:
             acc[0], acc[1], acc[2],
             gyro[0], gyro[1], gyro[2],
             self.projected_gravity[0], self.projected_gravity[1], self.projected_gravity[2],
-            self.base_lin_vel[0], self.base_lin_vel[1], self.base_lin_vel[2],
         ]
 
         # joint arrays
@@ -287,38 +289,6 @@ class Controller:
                 self.logger.warning(f"Error closing CSV: {e}")
         if hasattr(self, "vicon"):
             self.vicon.stop()
-    def start_custom_mode_conditionally(self):
-        print(f"{self.remoteControlService.get_custom_mode_operation_hint()}")
-        while True:
-            if self.remoteControlService.start_custom_mode():
-                break
-            time.sleep(0.1)
-        start_time = time.perf_counter()
-        create_prepare_cmd(self.low_cmd, self.cfg)
-        for i in range(B1JointCnt):
-            self.dof_target[i] = self.low_cmd.motor_cmd[i].q
-            self.filtered_dof_target[i] = self.low_cmd.motor_cmd[i].q
-        self._send_cmd(self.low_cmd)
-        send_time = time.perf_counter()
-        self.logger.debug(f"Send cmd took {(send_time - start_time)*1000:.4f} ms")
-        self.client.ChangeMode(RobotMode.kCustom)
-        end_time = time.perf_counter()
-        self.logger.debug(f"Change mode took {(end_time - send_time)*1000:.4f} ms")
-
-    def start_rl_gait_conditionally(self):
-        print(f"{self.remoteControlService.get_rl_gait_operation_hint()}")
-        while True:
-            if self.remoteControlService.start_rl_gait():
-                break
-            time.sleep(0.1)
-        create_first_frame_rl_cmd(self.low_cmd, self.cfg)
-        self._send_cmd(self.low_cmd)
-        self.next_inference_time = self.timer.get_time()
-        self.next_publish_time = self.timer.get_time()
-        self.publish_runner = threading.Thread(target=self._publish_cmd)
-        self.publish_runner.daemon = True
-        self.publish_runner.start()
-        print(f"{self.remoteControlService.get_operation_hint()}")
 
     def run(self):
         time_now = self.timer.get_time()
@@ -349,7 +319,7 @@ class Controller:
             vy=self.remoteControlService.get_vy_cmd(),
             vyaw=self.remoteControlService.get_vyaw_cmd(),
             quat_wxyz=self.quat_wxyz, 
-            base_lin_vel=self.base_lin_vel, 
+            base_lin_vel=self.base_lin_vel_vicon, 
             body_height=self.body_height, 
             ang_vel_global=self.global_ang_vel
         )
@@ -365,36 +335,6 @@ class Controller:
         self.logger.debug(f"Inference took {(inference_time - start_time)*1000:.4f} ms")
         time.sleep(0.001)
 
-    def _publish_cmd(self):
-        while self.running:
-            time_now = self.timer.get_time()
-            if time_now < self.next_publish_time:
-                time.sleep(0.001)
-                continue
-            self.next_publish_time += self.cfg["common"]["dt"]
-            self.logger.debug(f"Next publish time: {self.next_publish_time}")
-
-            self.filtered_dof_target = self.dof_target
-
-            for i in range(B1JointCnt):
-                self.low_cmd.motor_cmd[i].q = self.filtered_dof_target[i]
-
-            # Use series-parallel conversion for torque to avoid non-linearity
-            for i in self.cfg["mech"]["parallel_mech_indexes"]:
-                self.low_cmd.motor_cmd[i].q = self.dof_pos_latest[i]
-                self.low_cmd.motor_cmd[i].tau = np.clip(
-                    (self.filtered_dof_target[i] - self.dof_pos_latest[i]) * self.cfg["common"]["stiffness"][i],
-                    -self.cfg["common"]["torque_limit"][i],
-                    self.cfg["common"]["torque_limit"][i],
-                )
-                self.low_cmd.motor_cmd[i].kp = 0.0
-
-            start_time = time.perf_counter()
-            self._send_cmd(self.low_cmd)
-            publish_time = time.perf_counter()
-            self.logger.debug(f"Publish took {(publish_time - start_time)*1000:.4f} ms")
-            time.sleep(0.001)
-
     def __enter__(self) -> "Controller":
         return self
 
@@ -408,9 +348,6 @@ def run_real(cfg_file, policy_path, max_episode_length):
     with Controller(cfg_file, policy_path, max_episode_length) as controller:
         time.sleep(2)  # Wait for channels to initialize
         print("Initialization complete.")
-        controller.start_custom_mode_conditionally()
-        controller.start_rl_gait_conditionally()
-
         try:
             while controller.running:
                 controller.run()
