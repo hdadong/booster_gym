@@ -500,22 +500,25 @@ if __name__ == "__main__":
             contact_array = np.array(data_buffers[env_id]['contacts'], dtype=np.float32)
             rewards_array = np.array(data_buffers[env_id]['rewards'], dtype=np.float32)
             timestamps_array = np.array(data_buffers[env_id]['timestamps'], dtype=np.float64)
-            np.savez_compressed(
-                npz_filename,
-                states=state_array,
-                wm_states=wm_state_array,
-                priv_states=priv_state_array,
-                actions=actions_array,
-                torques=torques_array,
-                contacts=contact_array,
-                rewards=rewards_array,
-                timestamps=timestamps_array,
-            )
-            send_checkpoint_until_success(
-            ip=training_server,
-            port=data_port,
-            file_path=npz_filename,
-            )
+            if confirm_continue():
+                np.savez_compressed(
+                    npz_filename,
+                    states=state_array,
+                    wm_states=wm_state_array,
+                    priv_states=priv_state_array,
+                    actions=actions_array,
+                    torques=torques_array,
+                    contacts=contact_array,
+                    rewards=rewards_array,
+                    timestamps=timestamps_array,
+                )
+                send_checkpoint_until_success(
+                ip=training_server,
+                port=data_port,
+                file_path=npz_filename,
+                )
+                episode_num += 1
+                total_step += episode_step                
             data_buffers[env_id]['state'].clear()
             data_buffers[env_id]['wm_state'].clear()
             data_buffers[env_id]['priv_state'].clear()
@@ -524,8 +527,7 @@ if __name__ == "__main__":
             data_buffers[env_id]['contacts'].clear()
             data_buffers[env_id]['rewards'].clear()
             data_buffers[env_id]['timestamps'].clear()
-            episode_num += 1
-            total_step += episode_step
+
             
         open(flag_policy_train, 'w').close()
         send_checkpoint_until_success(
