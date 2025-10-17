@@ -334,7 +334,7 @@ class Controller:
             self.data_buffers[0]['wm_state'].append(self.policy.wm_obs)
             self.data_buffers[0]['priv_state'].append(self.policy.priv_obs)
             self.data_buffers[0]['actions'].append(self.policy.actions)
-            self.data_buffers[0]['torques'].append(self.torques[:11])
+            self.data_buffers[0]['torques'].append(self.torques[11:])
             self.data_buffers[0]['contacts'].append([0.0,0.0])
             self.data_buffers[0]['rewards'].append(0)
             self.data_buffers[0]['timestamps'].append(0)
