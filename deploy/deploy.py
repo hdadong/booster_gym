@@ -28,6 +28,15 @@ from utils.policy import Policy
 from utils.policy_simp import Policy as Policy_simp
 from utils.tcp_server import send_checkpoint_until_success, BackgroundFileServer
 from utils.vicon import Vicon
+
+# 与 JAX 常量一致
+LOWER_JOINT_LIMITS = np.array([-1.8, -0.3, -1.0, 0.0, -0.87, -0.44,
+                               -1.8, -1.57, -1.0, 0.0, -0.87, -0.44], dtype=np.float32)
+UPPER_JOINT_LIMITS = np.array([ 1.57,  1.57,  1.0,  2.34,  0.35,  0.44,
+                                1.57,  0.3,   1.0,  2.34,  0.35,  0.44], dtype=np.float32)
+MOTOR_VEL_LIMIT   = np.array([12.5, 10.9, 10.9, 11.7, 18.8, 12.4,
+                              12.5, 10.9, 10.9, 11.7, 18.8, 12.4], dtype=np.float32)
+
 def get_latest_policy_path(policy_dir):
     """
     从目录中查找形如 policy_<number>.pt 的权重文件，按<number>数值取最新。
@@ -199,20 +208,6 @@ class Controller:
         self.body_height = self.vicon.position[2]
         self.base_lin_vel_vicon = self.vicon.velocity
         if time_now >= self.next_inference_time:
-
-            if self.step > 0:
-                if self.body_height < 0.4 or self.body_height > 0.75:
-                    self.logger.warning("body height risk: {}".format(self.body_height))
-                    self.running = False
-                elif abs(self.global_lin_vel[0]) > 10.0 or abs(self.global_lin_vel[1]) > 10.0 or abs(self.global_lin_vel[2]) > 10.0:
-                    self.logger.warning("global vel: {}".format(self.global_lin_vel))
-                    self.running = False
-                elif self.step >= self.max_episode_length: 
-                    self.logger.warning("step > max_episode_length")
-                    self.running = False
-                elif abs(low_state_msg.imu_state.rpy[0]) > 0.785 or abs(low_state_msg.imu_state.rpy[1]) > 0.785:
-                    self.logger.warning("IMU base rpy values are too large: {}".format(low_state_msg.imu_state.rpy))
-                    self.running = False
             self.projected_gravity[:] = rotate_vector_inverse_rpy(
                 low_state_msg.imu_state.rpy[0],
                 low_state_msg.imu_state.rpy[1],
@@ -230,6 +225,34 @@ class Controller:
             for i, motor in enumerate(low_state_msg.motor_state_serial):
                 self.dof_pos[i] = motor.q
                 self.dof_vel[i] = motor.dq
+
+            if self.step > 0:
+                if self.body_height < 0.4 or self.body_height > 0.75:
+                    self.logger.warning("body height risk: {}".format(self.body_height))
+                    self.running = False
+                elif abs(self.global_lin_vel[0]) > 10.0 or abs(self.global_lin_vel[1]) > 10.0 or abs(self.global_lin_vel[2]) > 10.0:
+                    self.logger.warning("global vel: {}".format(self.global_lin_vel))
+                    self.running = False
+                elif self.step >= self.max_episode_length: 
+                    self.logger.warning("step > max_episode_length")
+                    self.running = False
+                elif abs(low_state_msg.imu_state.rpy[0]) > 0.785 or abs(low_state_msg.imu_state.rpy[1]) > 0.785:
+                    self.logger.warning("IMU base rpy values are too large: {}".format(low_state_msg.imu_state.rpy))
+                    self.running = False
+                elif np.any(self.dof_pos[11:] > UPPER_JOINT_LIMITS) or np.any(self.dof_pos[11:] < LOWER_JOINT_LIMITS):
+                    over_hi = np.where(self.dof_pos[11:] > UPPER_JOINT_LIMITS)[0].tolist()
+                    under_lo = np.where(self.dof_pos[11:] < LOWER_JOINT_LIMITS)[0].tolist()
+                    self.logger.warning(
+                        f"joint angle limit risk; q={self.dof_pos[11:].tolist()}, over_hi_idx={over_hi}, under_lo_idx={under_lo}"
+                    )
+                    self.running = False
+                elif np.any(np.abs(self.dof_vel[11:]) > MOTOR_VEL_LIMIT):
+                    # 哪些关节速度越界（便于调试）
+                    over_vel = np.where(np.abs(self.dof_vel[11:]) > MOTOR_VEL_LIMIT)[0].tolist()
+                    self.logger.warning(
+                        f"joint vel limit risk; qd={self.dof_vel[11:].tolist()}, over_vel_idx={over_vel}"
+                    )
+                    self.running = False
 
             # log exactly once per inference tick
             if self.last_logged_tick != self.next_inference_time:
