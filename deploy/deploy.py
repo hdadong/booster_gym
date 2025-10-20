@@ -217,11 +217,12 @@ def get_latest_policy_path(policy_dir):
     return os.path.join(policy_dir, latest_name)
 
 class Controller:
-    def __init__(self, cfg_file, policy_path, max_episode_length) -> None:
+    def __init__(self, cfg_file, policy_path, max_episode_length, base_data_dir) -> None:
         # Setup logging
         logging.basicConfig(level=logging.INFO)
         self.logger = logging.getLogger(__name__)
         self.max_episode_length = max_episode_length
+        self.base_data_dir = base_data_dir
         self.step = 0
         num_envs = 1
         data_dict =  {
@@ -265,7 +266,7 @@ class Controller:
 
     def _init_csv_logger(self):
         # directory + filename
-        log_dir = self.cfg.get("logging", {}).get("dir", "logs")
+        log_dir = self.base_data_dir
         Path(log_dir).mkdir(parents=True, exist_ok=True)
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.csv_path = str(Path(log_dir) / f"b1_run_{ts}.csv")
@@ -579,11 +580,11 @@ class Controller:
     def __exit__(self, *args) -> None:
         self.cleanup()
 
-def run_real(cfg_file, policy_path, max_episode_length):
+def run_real(cfg_file, policy_path, max_episode_length, base_data_dir):
     print(f"Starting custom controller, connecting to {args.net} ...")
     ChannelFactory.Instance().Init(0, args.net)
 
-    with Controller(cfg_file, policy_path, max_episode_length) as controller:
+    with Controller(cfg_file, policy_path, max_episode_length, base_data_dir) as controller:
         time.sleep(2)  # Wait for channels to initialize
         print("Initialization complete.")
         controller.start_custom_mode_conditionally()
@@ -695,7 +696,7 @@ if __name__ == "__main__":
         while total_step < max_episode_length:
             input_flag = wait_for_yes()
 
-            episode_step, data_buffers = run_real(cfg_file, policy_path, max_episode_length)
+            episode_step, data_buffers = run_real(cfg_file, policy_path, max_episode_length, base_data_dir)
 
             state_array = np.array(data_buffers[env_id]['state'], dtype=np.float32)
             wm_state_array = np.array(data_buffers[env_id]['wm_state'], dtype=np.float32)
