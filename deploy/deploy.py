@@ -106,7 +106,7 @@ def plot_preview_for_length(out_root: str, episode_num: int, arrays: dict, lengt
     os.makedirs(outdir, exist_ok=True)
 
     for key, do_denorm in PLOT_KEYS:
-        if key not in arrays:
+        if key not in arrays or key != "wm_states":
             continue
         arr_full = np.asarray(arrays[key])
         arr = arr_full[:length] if arr_full.ndim >= 1 else arr_full
@@ -184,6 +184,9 @@ def interactive_preview_and_choose_length_tty(out_root: str, episode_num: int, a
     while True:
         plot_preview_for_length(out_root, episode_num, arrays, current_len)
         accepted, val = wait_for_len_or_yes(full_len, current_len)
+        outdir = os.path.join(out_root, f"figs_env_{episode_num}")
+        if os.path.isdir(outdir):
+            shutil.rmtree(outdir)
         if accepted:
             return val
         current_len = val
