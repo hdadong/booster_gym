@@ -610,7 +610,7 @@ def wait_for_yes():
     prompt_printed = False
     while True:
         if not prompt_printed:
-            print("\nPress Y then Enter to continue: ", end="", flush=True)
+            print("\nPress d to restart, Press Y to continue: ", end="", flush=True)
             prompt_printed = True
 
         line = None
@@ -630,19 +630,13 @@ def wait_for_yes():
             time.sleep(0.5)   # 没拿到输入设备，稍等再试
             continue
 
-        if line.strip().lower() == 'y':
+        if line.strip().lower() == 'y' or line.strip().lower() == 'd':
             print()  # 换行美观
-            return True
+            return line.strip().lower()
 
         # 输入不是 Y，则给个简短提示，但不重复整行 prompt
-        print("\nType 'Y' and press Enter to continue: ", end="", flush=True)
+        print("\nPress d to restart, Press Y to continue: ", end="", flush=True)
 
-def confirm_continue():
-    try:
-        s = input("press Y to continue").strip()
-    except EOFError:
-        return False
-    return s.lower() == 'y'
 
 if __name__ == "__main__":
     import argparse
@@ -699,7 +693,7 @@ if __name__ == "__main__":
         print("load the policy:", policy_path)
         policy_server.stop()
         while total_step < max_episode_length:
-            wait_for_yes()
+            input_flag = wait_for_yes()
 
             episode_step, data_buffers = run_real(cfg_file, policy_path, max_episode_length)
 
@@ -756,14 +750,15 @@ if __name__ == "__main__":
                 rewards=rewards_array,
                 timestamps=timestamps_array,
             )
-            wait_for_yes()
-            send_checkpoint_until_success(
-            ip=training_server,
-            port=data_port,
-            file_path=npz_filename,
-            )
-            episode_num += 1
-            total_step += episode_step                
+            input_flag = wait_for_yes()
+            if input_flag == 'y':
+                send_checkpoint_until_success(
+                ip=training_server,
+                port=data_port,
+                file_path=npz_filename,
+                )
+                episode_num += 1
+                total_step += episode_step                
             data_buffers[env_id]['state'].clear()
             data_buffers[env_id]['wm_state'].clear()
             data_buffers[env_id]['priv_state'].clear()
