@@ -1,0 +1,4 @@
+deploy/lift_data
+deploy/logs
+*.csv
+*.pyc
