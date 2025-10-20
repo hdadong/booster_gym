@@ -37,6 +37,157 @@ UPPER_JOINT_LIMITS = np.array([ 1.57,  1.57,  1.0,  2.34,  0.35,  0.44,
 MOTOR_VEL_LIMIT   = np.array([12.5, 10.9, 10.9, 11.7, 18.8, 12.4,
                               12.5, 10.9, 10.9, 11.7, 18.8, 12.4], dtype=np.float32)
 
+
+import shutil
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+from utils.normalize import minmaxnormalizer
+
+# Optional: use your minmaxnormalizer if available
+try:
+    _normalizer_for_plot = minmaxnormalizer()  # noqa: F821 if class is elsewhere
+except Exception:
+    _normalizer_for_plot = None
+
+PLOT_KEYS = [
+    ("states", False),
+    ("wm_states", True),     # denorm
+    ("priv_states", False),
+    ("actions", False),
+    ("torques", False),
+    ("contacts", False),
+    ("rewards", False),
+]
+
+def _ensure_2d(a: np.ndarray) -> np.ndarray:
+    if a is None:
+        return None
+    a = np.asarray(a)
+    if a.ndim == 0: return a.reshape(1, 1)
+    if a.ndim == 1: return a[:, None]
+    T = a.shape[0]
+    return a.reshape(T, -1)
+
+def _plot_each_dim_envstep(outdir: str, name: str, arr: np.ndarray):
+    arr2d = _ensure_2d(arr)
+    if arr2d is None or arr2d.size == 0:
+        return
+    T, D = arr2d.shape
+    x = np.arange(T)
+    os.makedirs(outdir, exist_ok=True)
+    for d in range(D):
+        y = arr2d[:, d]
+        if np.all(np.isnan(y)):
+            continue
+        fig, ax = plt.subplots()
+        ax.plot(x, y)
+        ax.set_title(f"{name} - dim {d}")
+        ax.set_xlabel("env step")
+        ax.set_ylabel(f"{name}[{d}]")
+        ax.grid(True, alpha=0.3)
+        fig.tight_layout()
+        fig.savefig(os.path.join(outdir, f"{name}_dim{d}.png"), dpi=120)
+        plt.close(fig)
+
+def _maybe_denorm_wm(arr: np.ndarray, do_denorm: bool) -> np.ndarray:
+    if do_denorm and _normalizer_for_plot is not None:
+        try:
+            return _normalizer_for_plot.denormalize_obs(arr.astype(np.float32, copy=False))
+        except Exception as e:
+            print(f"[Warn] wm_states denorm failed: {e}; plot raw.")
+    return arr
+
+def plot_preview_for_length(out_root: str, episode_num: int, arrays: dict, length: int):
+    """Plot first `length` steps into {out_root}/figs_env_{episode_num}_len{length}/"""
+    outdir = os.path.join(out_root, f"figs_env_{episode_num}")
+    if os.path.isdir(outdir):
+        shutil.rmtree(outdir)
+    os.makedirs(outdir, exist_ok=True)
+
+    for key, do_denorm in PLOT_KEYS:
+        if key not in arrays:
+            continue
+        arr_full = np.asarray(arrays[key])
+        arr = arr_full[:length] if arr_full.ndim >= 1 else arr_full
+        arr = _maybe_denorm_wm(arr, do_denorm and key == "wm_states")
+        _plot_each_dim_envstep(outdir, key, arr)
+    print(f"[Plot] Preview saved to: {outdir}")
+
+def wait_for_len_or_yes(max_len: int, current_len: int) -> tuple[bool, int | None]:
+    """
+    非阻塞刷屏；用 /dev/tty 或回退到 stdin(若是TTY) 读一整行。
+    返回 (accepted, new_len):
+      - 若用户输入 'y'：返回 (True, current_len)
+      - 若输入整数：返回 (False, n_clamped)
+      - 否则继续循环
+    """
+    import sys, time
+    prompt_printed = False
+    while True:
+        if not prompt_printed:
+            print(f"\nEnter length (<= {max_len}) to replot, or 'Y' to accept {current_len}: ",
+                  end="", flush=True)
+            prompt_printed = True
+
+        line = None
+        try:
+            with open('/dev/tty', 'r') as tty:
+                line = tty.readline()
+        except Exception:
+            try:
+                if sys.stdin and sys.stdin.isatty():
+                    line = sys.stdin.readline()
+            except Exception:
+                pass
+
+        if line is None:
+            time.sleep(0.5)
+            continue
+
+        s = line.strip().lower()
+        if s == 'y':
+            print()
+            return True, current_len
+        try:
+            n = int(s)
+            if n <= 0:
+                print("\nPlease enter a positive integer: ", end="", flush=True)
+                continue
+            if n > max_len:
+                print(f"\nLength too large; using max {max_len}.", flush=True)
+                n = max_len
+            return False, n
+        except ValueError:
+            print("\nEnter an integer or 'Y' to accept: ", end="", flush=True)
+
+def interactive_preview_and_choose_length_tty(out_root: str, episode_num: int, arrays: dict) -> int:
+    """
+    1) 以“自身长度”首次绘图
+    2) 通过 /dev/tty 输入整数 N 重新绘制 [:N]
+    3) 输入 'y' 接受当前长度，返回该长度
+    """
+    # full length from states or any first available key
+    keys_present = [k for k, _ in PLOT_KEYS if k in arrays]
+    if "states" in arrays:
+        full_len = len(np.asarray(arrays["states"]))
+    elif keys_present:
+        full_len = len(np.asarray(arrays[keys_present[0]]))
+    else:
+        full_len = 0
+
+    if full_len <= 0:
+        print("[Warn] No time-series data to preview. Accepting length=0.")
+        return 0
+
+    current_len = full_len
+    while True:
+        plot_preview_for_length(out_root, episode_num, arrays, current_len)
+        accepted, val = wait_for_len_or_yes(full_len, current_len)
+        if accepted:
+            return val
+        current_len = val
+
 def get_latest_policy_path(policy_dir):
     """
     从目录中查找形如 policy_<number>.pt 的权重文件，按<number>数值取最新。
@@ -552,10 +703,6 @@ if __name__ == "__main__":
 
             episode_step, data_buffers = run_real(cfg_file, policy_path, max_episode_length)
 
-            npz_filename = os.path.join(
-                real_data_dir,
-                f'env_{episode_num}_data_{episode_step}.npz',
-            )
             state_array = np.array(data_buffers[env_id]['state'], dtype=np.float32)
             wm_state_array = np.array(data_buffers[env_id]['wm_state'], dtype=np.float32)
             priv_state_array = np.array(data_buffers[env_id]['priv_state'], dtype=np.float32)
@@ -565,6 +712,38 @@ if __name__ == "__main__":
             rewards_array = np.array(data_buffers[env_id]['rewards'], dtype=np.float32)
             timestamps_array = np.array(data_buffers[env_id]['timestamps'], dtype=np.float64)
 
+            arrays = {
+                "states":       state_array,
+                "wm_states":    wm_state_array,
+                "priv_states":  priv_state_array,
+                "actions":      actions_array,
+                "torques":      torques_array,
+                "contacts":     contact_array,
+                "rewards":      rewards_array,
+                "timestamps":   timestamps_array,
+            }
+            accepted_len = interactive_preview_and_choose_length_tty(real_data_dir, episode_num, arrays)
+
+            # 统一裁剪
+            def _trim(a, n):
+                a = np.asarray(a)
+                if a.ndim == 0:
+                    return a
+                return a[:n]
+
+            state_array      = _trim(state_array, accepted_len)
+            wm_state_array   = _trim(wm_state_array, accepted_len)
+            priv_state_array = _trim(priv_state_array, accepted_len)
+            actions_array    = _trim(actions_array, accepted_len)
+            torques_array    = _trim(torques_array, accepted_len)
+            contact_array    = _trim(contact_array, accepted_len)
+            rewards_array    = _trim(rewards_array, accepted_len)
+            timestamps_array = _trim(timestamps_array, accepted_len)
+
+            npz_filename = os.path.join(
+                real_data_dir,
+                f'env_{episode_num}_data_{accepted_len}.npz',
+            )
 
             np.savez_compressed(
                 npz_filename,
