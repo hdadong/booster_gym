@@ -172,12 +172,31 @@ if __name__ == "__main__":
     )
     mujoco.mj_forward(mj_model, mj_data)
     normalizer = NormalTanhDistribution()
-
     actions = np.zeros((cfg["env"]["num_actions"]), dtype=np.float32)
     dof_targets = np.zeros(default_dof_pos.shape, dtype=np.float32)
     gait_frequency = gait_process = 0.0
     lin_vel_x = lin_vel_y = ang_vel_yaw = 0.0
     it = 0
+    obs_mean = np.array([ 1.37172379e-02,  3.53139057e-03, -9.94338930e-01, -1.84248842e-03,
+  2.19509332e-03,  1.61452889e-02, -2.15455610e-02,  1.72599647e-02,
+  2.25300975e-02,  1.21383031e-03,  1.26357860e-04, -3.57616156e-01,
+  1.28460124e-01,  1.29287096e-03,  5.63962400e-01, -2.10249782e-01,
+ -1.29617706e-01, -3.64434123e-01, -6.98471442e-02,  6.12215213e-02,
+  5.03367066e-01, -1.39685035e-01,  1.11739248e-01, -4.81613533e-04,
+  7.59325642e-03,  1.22257574e-02,  9.53489356e-03,  1.83292909e-03,
+  1.41830593e-02, -3.63218668e-03, -1.51777023e-03, -5.86699834e-03,
+  8.39451049e-03,  1.24912960e-02, -1.54671837e-02, -1.71308175e-01,
+  1.63175151e-01, -1.19749513e-02, -6.25355542e-02, -1.17908381e-02,
+ -1.55036300e-01, -1.70031399e-01, -1.19875036e-01,  7.87013546e-02,
+ -1.21435225e-01,  3.54985036e-02,  1.06634386e-01], dtype=np.float32)
+    obs_std = np.array([0.07606246, 0.07354303, 0.04887975, 0.72584885, 0.71435946, 0.6610478 ,
+ 0.5406346 , 0.44328502, 0.5325911 , 0.6731312 , 0.6722322 , 0.22061047,
+ 0.11689425, 0.12047654, 0.36127594, 0.22395581, 0.14686853, 0.22083732,
+ 0.13550289, 0.12429432, 0.34629634, 0.20072974, 0.14736265, 2.3733208 ,
+ 1.693957  , 2.1185708 , 3.9716487 , 4.4172387 , 4.1508403 , 2.3845325 ,
+ 1.7062409 , 2.1494184 , 3.7765918 , 4.2339725 , 4.126802  , 0.32139105,
+ 0.33337796, 0.20529182, 0.60802674, 0.43839827, 0.4217969 , 0.32762653,
+ 0.36651224, 0.21787657, 0.5718411 , 0.42906114, 0.40963235], dtype=np.float32)
     obs_minmax_normalizer = minmaxnormalizer()
     with mujoco.viewer.launch_passive(mj_model, mj_data) as viewer:
         viewer.cam.elevation = -20
@@ -217,9 +236,11 @@ if __name__ == "__main__":
                 obs[11:23] = dof_pos
                 obs[23:35] = dof_vel
                 obs[35:47] = actions
+                obs = (obs - obs_mean) / obs_std
                 obs_torch = torch.tensor(obs)
-                obs_torch_minmaxnorm = obs_minmax_normalizer.normalize_obs(obs_torch)
-                dist = policy(obs_torch_minmaxnorm.unsqueeze(0))        # -> shape [1, 2*A]
+
+                #obs_torch_minmaxnorm = obs_minmax_normalizer.normalize_obs(obs_torch)
+                dist = policy(obs_torch.unsqueeze(0))        # -> shape [1, 2*A]
                 #actions = dist.detach().numpy()     # -> shape [1, A]
 
                 actions = normalizer.mode(dist).detach().numpy()     # -> shape [1, A]
