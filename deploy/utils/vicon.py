@@ -21,7 +21,7 @@ def nparray2bin(a):
     return a.tobytes()
 
 def bin2nparray(b):
-    return np.frombuffer(b, dtype=float).reshape(13)
+    return np.frombuffer(b, dtype=float).reshape(16)
 
 def int2bin(integer):
     return struct.pack(">I", integer)
@@ -102,7 +102,7 @@ class Vicon:
         self.rpy = np.zeros(3)
         self.velocity = np.zeros(3)
         self.velocity2 = np.zeros(3)
-
+        self.rotation_rate =  np.zeros(3)
         self.quit_event = threading.Event()
         self.server_thread = threading.Thread(target=self.server.launch)
         self.data_thread = None
@@ -128,7 +128,7 @@ class Vicon:
 
         self.rpy = data[6:9]
         self.rotation = data[9:13]
-
+        self.rotation_rate = data[13:16]
     def stop(self):
         self.quit_event.set()
         self.data_thread.join()

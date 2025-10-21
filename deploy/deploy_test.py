@@ -27,7 +27,7 @@ from utils.timer import TimerConfig, Timer
 from utils.policy import Policy
 from utils.policy_simp import Policy as Policy_simp
 from utils.tcp_server import send_checkpoint_until_success, BackgroundFileServer
-from utils.vicon import Vicon
+from utils.vicon import Vicon, global_to_local_velocity
 def get_latest_policy_path(policy_dir):
     """
     从目录中查找形如 policy_<number>.pt 的权重文件，按<number>数值取最新。
@@ -139,6 +139,8 @@ class Controller:
         self.timer = Timer(TimerConfig(time_step=self.cfg["common"]["dt"]))
         self.next_publish_time = self.timer.get_time()
         self.next_inference_time = self.timer.get_time()
+        self.last_inference_time = self.timer.get_time()
+        self.prev_position = self.vicon.position
 
     def _init_low_state_values(self):
         self.base_ang_vel = np.zeros(3, dtype=np.float32)
@@ -202,8 +204,8 @@ class Controller:
         self.acc_update_time = time_now
 
         self.body_height = self.vicon.position[2]
-        self.base_lin_vel_vicon = self.vicon.velocity
-        self.base_ang_vel_vicon = self.vicon.rotation_rate
+        #self.base_lin_vel_vicon = self.vicon.velocity
+        #self.base_ang_vel_vicon = self.vicon.rotation_rate
         self.base_euler_vicon = self.vicon.rpy
         if time_now >= self.next_inference_time:
 
@@ -238,10 +240,7 @@ class Controller:
                 self.dof_pos[i] = motor.q
                 self.dof_vel[i] = motor.dq
 
-            # log exactly once per inference tick
-            if self.last_logged_tick != self.next_inference_time:
-                self._log_one_row(time_now, low_state_msg)
-                self.last_logged_tick = self.next_inference_time
+
 
     def _log_one_row(self, t: float, low_state_msg: LowState):
         # read values from current state and message
@@ -306,6 +305,9 @@ class Controller:
         if time_now < self.next_inference_time:
             time.sleep(0.001)
             return
+        dt = time_now - self.last_inference_time
+        current_pos = self.vicon.position
+        self.last_inference_time = time_now
         self.logger.debug("-----------------------------------------------------")
         self.next_inference_time += self.policy.get_policy_interval()
         self.logger.debug(f"Next start time: {self.next_inference_time}")
@@ -319,7 +321,9 @@ class Controller:
             self.data_buffers[0]['contacts'].append([0.0,0.0])
             self.data_buffers[0]['rewards'].append(0)
             self.data_buffers[0]['timestamps'].append(0)
-
+        self.global_lin_vel_vicon = (current_pos - self.prev_position) / dt
+        self.base_lin_vel_vicon = global_to_local_velocity(self.global_lin_vel_vicon, self.vicon.rotation)
+        self.prev_position = current_pos
         self.dof_target[:] = self.policy.inference(
             time_now=time_now,
             dof_pos=self.dof_pos,
@@ -334,6 +338,10 @@ class Controller:
             body_height=self.body_height, 
             ang_vel_global=self.global_ang_vel
         )
+        # log exactly once per inference tick
+        if self.last_logged_tick != self.next_inference_time:
+            self._log_one_row(time_now, low_state_msg)
+            self.last_logged_tick = self.next_inference_time
         # gm: GetModeResponse = GetModeResponse()
         # res = self.client.GetMode(gm)
         # if gm.mode == RobotMode.kPrepare:
@@ -439,7 +447,7 @@ if __name__ == "__main__":
     real_data_dir = os.path.join(base_data_dir, 'real_data_dir')
     os.makedirs(real_data_dir, exist_ok=True)
 
-    max_episode_length = 3000
+    max_episode_length = 500
     training_server = '10.1.108.171'
     flat_port = 9002
     data_port = 9003
