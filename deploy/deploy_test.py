@@ -123,8 +123,10 @@ class Controller:
             "vicon_lin_vx","vicon_lin_vy","vicon_lin_vz",
             "base_lin_vx","base_lin_vy","base_lin_vz",
             "vx_cmd","vy_cmd","vyaw_cmd",
+            "rpy_roll_vicon","rpy_pitch_vicon","rpy_yaw_vicon",
             "rpy_roll","rpy_pitch","rpy_yaw",
             "acc_x","acc_y","acc_z",
+            "gyro_x_vicon","gyro_y_vicon","gyro_z_vicon",
             "gyro_x","gyro_y","gyro_z",
             "proj_gx","proj_gy","proj_gz",
             ]
@@ -142,6 +144,11 @@ class Controller:
         self.base_ang_vel = np.zeros(3, dtype=np.float32)
         self.global_ang_vel = np.zeros(3, dtype=np.float32)
         self.global_lin_vel = np.zeros(3, dtype=np.float32)
+        self.base_lin_vel_vicon = np.zeros(3, dtype=np.float32)
+        self.base_euler_rate_vicon = np.zeros(3, dtype=np.float32)
+        self.base_euler_vicon = np.zeros(3, dtype=np.float32)
+        self.base_quat_vicon = np.zeros(3, dtype=np.float32)
+
         self.base_lin_vel = np.zeros(3, dtype=np.float32)
         self.acc = np.zeros(3, dtype=np.float32)
         self.acc_update_time = self.timer.get_time()
@@ -196,6 +203,8 @@ class Controller:
 
         self.body_height = self.vicon.position[2]
         self.base_lin_vel_vicon = self.vicon.velocity
+        self.base_ang_vel_vicon = self.vicon.rotation_rate
+        self.base_euler_vicon = self.vicon.rpy
         if time_now >= self.next_inference_time:
 
             if self.step > 0:
@@ -248,8 +257,10 @@ class Controller:
             self.remoteControlService.get_vx_cmd(),
             self.remoteControlService.get_vy_cmd(),
             self.remoteControlService.get_vyaw_cmd(),
+            self.base_euler_vicon[0], self.base_euler_vicon[1], self.base_euler_vicon[2],
             rpy[0], rpy[1], rpy[2],
             acc[0], acc[1], acc[2],
+            self.base_ang_vel_vicon[0], self.base_ang_vel_vicon[1], self.base_ang_vel_vicon[2],
             gyro[0], gyro[1], gyro[2],
             self.projected_gravity[0], self.projected_gravity[1], self.projected_gravity[2],
         ]
