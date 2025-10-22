@@ -123,11 +123,9 @@ class Controller:
             "vicon_lin_vx","vicon_lin_vy","vicon_lin_vz",
             "base_lin_vx","base_lin_vy","base_lin_vz",
             "vx_cmd","vy_cmd","vyaw_cmd",
-            "rpy_roll_vicon","rpy_pitch_vicon","rpy_yaw_vicon",
-            "rpy_roll","rpy_pitch","rpy_yaw",
-            "acc_x","acc_y","acc_z",
             "gyro_x_vicon","gyro_y_vicon","gyro_z_vicon",
             "gyro_x","gyro_y","gyro_z",
+            "proj_gx_vicon","proj_gy_vicon","proj_gz_vicon",
             "proj_gx","proj_gy","proj_gz",
             ]
             + q_cols + dq_cols + tgt_cols
@@ -149,7 +147,7 @@ class Controller:
         self.global_lin_vel = np.zeros(3, dtype=np.float32)
         self.base_lin_vel_vicon = np.zeros(3, dtype=np.float32)
         self.base_ang_vel_vicon = np.zeros(3, dtype=np.float32)
-        self.base_quat_vicon = np.zeros(3, dtype=np.float32)
+        self.base_quat_vicon = np.zeros(4, dtype=np.float32)
 
         self.base_lin_vel = np.zeros(3, dtype=np.float32)
         self.acc = np.zeros(3, dtype=np.float32)
@@ -178,6 +176,8 @@ class Controller:
             raise
 
     def _low_state_handler(self, low_state_msg: LowState):
+        
+        print(low_state_msg.imu_state.rpy, self.vicon.rpy)
         if abs(low_state_msg.imu_state.rpy[0]) > 0.785 or abs(low_state_msg.imu_state.rpy[1]) > 0.785:
             #self.logger.warning("IMU base rpy values are too large: {}".format(low_state_msg.imu_state.rpy))
             self.running = False
@@ -206,7 +206,7 @@ class Controller:
         self.body_height = self.vicon.position[2]
         #self.base_lin_vel_vicon = self.vicon.velocity
         #self.base_ang_vel_vicon = self.vicon.rotation_rate
-        self.base_quat_vicon = self.vicon.rpy
+        self.base_quat_vicon = self.vicon.rotation
         if time_now >= self.next_inference_time:
 
             if self.step > 0:
@@ -243,9 +243,9 @@ class Controller:
             )
             self.global_ang_vel_vicon = rotate_vector_rpy(
                 self.vicon.rpy[0],
-                self.vicon.rpy[0],
+                self.vicon.rpy[1],
                 self.vicon.rpy[2],
-                low_state_msg.imu_state.gyro
+                self.base_ang_vel_vicon,
             )
             self.quat_wxyz = rpy_zyx_to_quat_wxyz(roll=low_state_msg.imu_state.rpy[0], pitch=low_state_msg.imu_state.rpy[1], yaw=low_state_msg.imu_state.rpy[2])
             self.quat_wxyz_vicon = rpy_zyx_to_quat_wxyz(roll=self.vicon.rpy[0], pitch=self.vicon.rpy[1], yaw=self.vicon.rpy[2])
@@ -255,12 +255,8 @@ class Controller:
 
 
 
-    def _log_one_row(self, t: float, low_state_msg: LowState):
+    def _log_one_row(self, t: float):
         # read values from current state and message
-        rpy  = low_state_msg.imu_state.rpy
-        gyro = low_state_msg.imu_state.gyro
-        acc  = low_state_msg.imu_state.acc
-
         row = [
             t,
             self.body_height,
@@ -269,10 +265,8 @@ class Controller:
             self.remoteControlService.get_vx_cmd(),
             self.remoteControlService.get_vy_cmd(),
             self.remoteControlService.get_vyaw_cmd(),
-            rpy[0], rpy[1], rpy[2],
-            acc[0], acc[1], acc[2],
             self.base_ang_vel_vicon[0], self.base_ang_vel_vicon[1], self.base_ang_vel_vicon[2],
-            gyro[0], gyro[1], gyro[2],
+            self.base_ang_vel[0], self.base_ang_vel[1], self.base_ang_vel[2],
             self.projected_gravity_vicon[0], self.projected_gravity_vicon[1], self.projected_gravity_vicon[2],
             self.projected_gravity[0], self.projected_gravity[1], self.projected_gravity[2],
         ]
@@ -347,7 +341,7 @@ class Controller:
             dof_vel=self.dof_vel,
             base_ang_vel=self.base_ang_vel,
             projected_gravity=self.projected_gravity,
-            vx=0.1,#self.remoteControlService.get_vx_cmd(),
+            vx=0.6,#self.remoteControlService.get_vx_cmd(),
             vy=self.remoteControlService.get_vy_cmd(),
             vyaw=self.remoteControlService.get_vyaw_cmd(),
             quat_wxyz=self.quat_wxyz, 
@@ -357,7 +351,7 @@ class Controller:
         )
         # log exactly once per inference tick
         if self.last_logged_tick != self.next_inference_time:
-            self._log_one_row(time_now, low_state_msg)
+            self._log_one_row(time_now)
             self.last_logged_tick = self.next_inference_time
         # gm: GetModeResponse = GetModeResponse()
         # res = self.client.GetMode(gm)
@@ -387,10 +381,6 @@ def run_real(cfg_file, policy_path, max_episode_length):
         try:
             while controller.running:
                 controller.run()
-            if controller.step >= max_episode_length:
-                controller.client.ChangeMode(RobotMode.kPrepare)
-            else:
-                controller.client.ChangeMode(RobotMode.kPrepare)
             return controller.step, controller.data_buffers
 
         except KeyboardInterrupt:
@@ -465,7 +455,7 @@ if __name__ == "__main__":
     os.makedirs(real_data_dir, exist_ok=True)
 
     max_episode_length = 500
-    training_server = '10.1.108.171'
+    training_server = '10.2.152.10'
     flat_port = 9002
     data_port = 9003
 
@@ -483,16 +473,11 @@ if __name__ == "__main__":
         env_id = 0
         total_step = 0
         episode_num = 0
-        policy_path = None
-        policy_server = BackgroundFileServer(host="0.0.0.0", port=9001, save_dir=policy_dir)
-        policy_server.start() 
-        while policy_path is None or policy_path in policy_set:
-            policy_path = get_latest_policy_path(policy_dir)
-            time.sleep(3)
+        policy_path = '/home/master/booster_gym/deploy/models/sac.pt'
+
         
         policy_set.add(policy_path)
         print("load the policy:", policy_path)
-        policy_server.stop()
         while total_step < max_episode_length:
             wait_for_yes()
 
@@ -522,11 +507,11 @@ if __name__ == "__main__":
                 rewards=rewards_array,
                 timestamps=timestamps_array,
             )
-            test_load = np.load(npz_filename)
-            for key in test_load:
-                if key == 'wm_states':
-                    print(f"{key}:")
-                    print(test_load[key][:,76])
+            # test_load = np.load(npz_filename)
+            # for key in test_load:
+            #     if key == 'wm_states':
+            #         print(f"{key}:")
+            #         print(test_load[key][:,76])
             wait_for_yes()
 
             send_checkpoint_until_success(

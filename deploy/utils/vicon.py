@@ -14,7 +14,7 @@ def global_to_local_velocity(global_velocity, rotation_quaternion):
     rotation_matrix = r.as_matrix()
     return rotation_matrix.T @ np.array(global_velocity)
 
-def omega(self, quaternion, quaternion_prev, dt):
+def omega(quaternion, quaternion_prev, dt):
     dq = (quaternion - quaternion_prev) / dt
     w, x, y, z = quaternion
     omega = 2 * np.mat([[w, x, y, z],
@@ -133,7 +133,7 @@ class Vicon:
     def update_states(self, data):
         self.position = data[0:3]
         self.velocity = global_to_local_velocity(data[3:6], data[9:13])
-        self.velocity2 = data[3:6]
+        self.velocity_blobal = data[3:6]
 
         self.rpy = data[6:9]
         self.rotation = data[9:13]

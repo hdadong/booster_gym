@@ -13,9 +13,9 @@ PAIRS = [
     ("Linear Velocity Y", ("vicon_lin_vy", "base_lin_vy"), "vy (m/s)", "lin_vel_y.png"),
     ("Linear Velocity Z", ("vicon_lin_vz", "base_lin_vz"), "vz (m/s)", "lin_vel_z.png"),
 
-    ("Roll (RPY)",  ("rpy_roll_vicon",  "rpy_roll"),  "roll (rad)",  "rpy_roll.png"),
-    ("Pitch (RPY)", ("rpy_pitch_vicon", "rpy_pitch"), "pitch (rad)", "rpy_pitch.png"),
-    ("Yaw (RPY)",   ("rpy_yaw_vicon",   "rpy_yaw"),   "yaw (rad)",   "rpy_yaw.png"),
+    ("proj_gx",  ("proj_gx_vicon",  "proj_gx"),  "gravity_x",  "gravity_x.png"),
+    ("proj_gy", ("proj_gy_vicon", "proj_gy"), "gravity_y", "gravity_y.png"),
+    ("proj_gz",   ("proj_gz_vicon",   "proj_gz"),   "gravity_z",   "gravity_z.png"),
 
     ("Gyro X", ("gyro_x_vicon", "gyro_x"), "wx (rad/s)", "gyro_x.png"),
     ("Gyro Y", ("gyro_y_vicon", "gyro_y"), "wy (rad/s)", "gyro_y.png"),
@@ -60,7 +60,7 @@ def plot_pair(df: pd.DataFrame, t: np.ndarray, vicon_col: str, non_vicon_col: st
 
     plt.figure()
     plt.plot(t, y1, label=vicon_col)
-    #plt.plot(t, y2, label=non_vicon_col)
+    plt.plot(t, y2, label=non_vicon_col)
     plt.title(title)
     plt.xlabel("time (s) or index")
     plt.ylabel(y_label)

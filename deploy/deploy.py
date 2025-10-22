@@ -22,7 +22,7 @@ from booster_robotics_sdk_python import (
 
 from utils.command import create_prepare_cmd, create_first_frame_rl_cmd
 from utils.remote_control_service import RemoteControlService
-from utils.rotate import rotate_vector_inverse_rpy, rotate_vector_rpy, rpy_zyx_to_quat_wxyz
+from utils.rotate import rotate_vector_inverse_rpy, rotate_vector_rpy, rpy_xyz_to_quat_wxyz
 from utils.timer import TimerConfig, Timer
 from utils.policy import Policy
 from utils.policy_simp import Policy as Policy_simp
@@ -31,11 +31,11 @@ from utils.vicon import Vicon
 
 # 与 JAX 常量一致
 LOWER_JOINT_LIMITS = np.array([-1.8, -0.3, -1.0, 0.0, -0.87, -0.44,
-                               -1.8, -1.57, -1.0, 0.0, -0.87, -0.44], dtype=np.float32)
+                               -1.8, -1.57, -1.0, 0.0, -0.87, -0.44], dtype=np.float32) * 1.45
 UPPER_JOINT_LIMITS = np.array([ 1.57,  1.57,  1.0,  2.34,  0.35,  0.44,
-                                1.57,  0.3,   1.0,  2.34,  0.35,  0.44], dtype=np.float32)
+                                1.57,  0.3,   1.0,  2.34,  0.35,  0.44], dtype=np.float32) * 1.45
 MOTOR_VEL_LIMIT   = np.array([12.5, 10.9, 10.9, 11.7, 18.8, 12.4,
-                              12.5, 10.9, 10.9, 11.7, 18.8, 12.4], dtype=np.float32)
+                              12.5, 10.9, 10.9, 11.7, 18.8, 12.4], dtype=np.float32) * 3
 
 
 import shutil
@@ -340,15 +340,14 @@ class Controller:
 
 
         self.timer.tick_timer_if_sim()
-        time_now = self.timer.get_time()
         for i, motor in enumerate(low_state_msg.motor_state_serial):
             self.dof_pos_latest[i] = motor.q
             self.torques[i] = motor.tau_est
 
-
         r, p, y = low_state_msg.imu_state.rpy
         acc_body = np.array(low_state_msg.imu_state.acc, dtype=np.float32)
         a_world = rotate_vector_rpy(r, p, y, acc_body) + np.array([0.0, 0.0, -9.81], dtype=np.float32)
+        time_now = self.timer.get_time()
         # 速度积分（注意 dt、漂移与零偏）
         dt = max(0.0, time_now - self.acc_update_time)
         self.global_lin_vel += a_world * dt
@@ -376,7 +375,7 @@ class Controller:
                 low_state_msg.imu_state.rpy[2],
                 low_state_msg.imu_state.gyro
             )
-            self.quat_wxyz = rpy_zyx_to_quat_wxyz(roll=low_state_msg.imu_state.rpy[0], pitch=low_state_msg.imu_state.rpy[1], yaw=low_state_msg.imu_state.rpy[2])
+            self.quat_wxyz = rpy_xyz_to_quat_wxyz(roll=low_state_msg.imu_state.rpy[0], pitch=low_state_msg.imu_state.rpy[1], yaw=low_state_msg.imu_state.rpy[2])
             for i, motor in enumerate(low_state_msg.motor_state_serial):
                 self.dof_pos[i] = motor.q
                 self.dof_vel[i] = motor.dq
@@ -527,11 +526,11 @@ class Controller:
             dof_vel=self.dof_vel,
             base_ang_vel=self.base_ang_vel,
             projected_gravity=self.projected_gravity,
-            vx=0.1,#self.remoteControlService.get_vx_cmd(),
+            vx=0.6,#self.remoteControlService.get_vx_cmd(),
             vy=self.remoteControlService.get_vy_cmd(),
             vyaw=self.remoteControlService.get_vyaw_cmd(),
             quat_wxyz=self.quat_wxyz, 
-            base_lin_vel=self.base_lin_vel_vicon, 
+            base_lin_vel=self.base_lin_vel, 
             body_height=self.body_height, 
             ang_vel_global=self.global_ang_vel
         )
@@ -668,7 +667,7 @@ if __name__ == "__main__":
     os.makedirs(real_data_dir, exist_ok=True)
 
     max_episode_length = 500
-    training_server = '10.1.108.171'
+    training_server = '10.2.152.10'
     flat_port = 9002
     data_port = 9003
 
