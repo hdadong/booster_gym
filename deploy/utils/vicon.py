@@ -14,6 +14,15 @@ def global_to_local_velocity(global_velocity, rotation_quaternion):
     rotation_matrix = r.as_matrix()
     return rotation_matrix.T @ np.array(global_velocity)
 
+def omega(self, quaternion, quaternion_prev, dt):
+    dq = (quaternion - quaternion_prev) / dt
+    w, x, y, z = quaternion
+    omega = 2 * np.mat([[w, x, y, z],
+                        [-x, w, z, -y],
+                        [-y, -z, w, x],
+                        [-z, y, -x, w]]) * np.vstack(dq)
+    return np.asarray(omega[1:4]).reshape(-1)
+
 def bin2int(int_bin):
     return struct.unpack('>I', int_bin)[0]
 

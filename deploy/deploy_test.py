@@ -27,7 +27,7 @@ from utils.timer import TimerConfig, Timer
 from utils.policy import Policy
 from utils.policy_simp import Policy as Policy_simp
 from utils.tcp_server import send_checkpoint_until_success, BackgroundFileServer
-from utils.vicon import Vicon, global_to_local_velocity
+from utils.vicon import Vicon, global_to_local_velocity, omega
 def get_latest_policy_path(policy_dir):
     """
     从目录中查找形如 policy_<number>.pt 的权重文件，按<number>数值取最新。
@@ -141,14 +141,14 @@ class Controller:
         self.next_inference_time = self.timer.get_time()
         self.last_inference_time = self.timer.get_time()
         self.prev_position = self.vicon.position
+        self.prev_quat = self.vicon.rotation
 
     def _init_low_state_values(self):
         self.base_ang_vel = np.zeros(3, dtype=np.float32)
         self.global_ang_vel = np.zeros(3, dtype=np.float32)
         self.global_lin_vel = np.zeros(3, dtype=np.float32)
         self.base_lin_vel_vicon = np.zeros(3, dtype=np.float32)
-        self.base_euler_rate_vicon = np.zeros(3, dtype=np.float32)
-        self.base_euler_vicon = np.zeros(3, dtype=np.float32)
+        self.base_ang_vel_vicon = np.zeros(3, dtype=np.float32)
         self.base_quat_vicon = np.zeros(3, dtype=np.float32)
 
         self.base_lin_vel = np.zeros(3, dtype=np.float32)
@@ -206,7 +206,7 @@ class Controller:
         self.body_height = self.vicon.position[2]
         #self.base_lin_vel_vicon = self.vicon.velocity
         #self.base_ang_vel_vicon = self.vicon.rotation_rate
-        self.base_euler_vicon = self.vicon.rpy
+        self.base_quat_vicon = self.vicon.rpy
         if time_now >= self.next_inference_time:
 
             if self.step > 0:
@@ -228,6 +228,12 @@ class Controller:
                 low_state_msg.imu_state.rpy[2],
                 np.array([0.0, 0.0, -1.0]),
             )
+            self.projected_gravity_vicon = rotate_vector_inverse_rpy(
+                self.vicon.rpy[0],
+                self.vicon.rpy[1],
+                self.vicon.rpy[2],
+                np.array([0.0, 0.0, -1.0]),
+            )
             self.base_ang_vel[:] = low_state_msg.imu_state.gyro
             self.global_ang_vel[:] = rotate_vector_rpy(
                 low_state_msg.imu_state.rpy[0],
@@ -235,7 +241,14 @@ class Controller:
                 low_state_msg.imu_state.rpy[2],
                 low_state_msg.imu_state.gyro
             )
+            self.global_ang_vel_vicon = rotate_vector_rpy(
+                self.vicon.rpy[0],
+                self.vicon.rpy[0],
+                self.vicon.rpy[2],
+                low_state_msg.imu_state.gyro
+            )
             self.quat_wxyz = rpy_zyx_to_quat_wxyz(roll=low_state_msg.imu_state.rpy[0], pitch=low_state_msg.imu_state.rpy[1], yaw=low_state_msg.imu_state.rpy[2])
+            self.quat_wxyz_vicon = rpy_zyx_to_quat_wxyz(roll=self.vicon.rpy[0], pitch=self.vicon.rpy[1], yaw=self.vicon.rpy[2])
             for i, motor in enumerate(low_state_msg.motor_state_serial):
                 self.dof_pos[i] = motor.q
                 self.dof_vel[i] = motor.dq
@@ -256,11 +269,11 @@ class Controller:
             self.remoteControlService.get_vx_cmd(),
             self.remoteControlService.get_vy_cmd(),
             self.remoteControlService.get_vyaw_cmd(),
-            self.base_euler_vicon[0], self.base_euler_vicon[1], self.base_euler_vicon[2],
             rpy[0], rpy[1], rpy[2],
             acc[0], acc[1], acc[2],
             self.base_ang_vel_vicon[0], self.base_ang_vel_vicon[1], self.base_ang_vel_vicon[2],
             gyro[0], gyro[1], gyro[2],
+            self.projected_gravity_vicon[0], self.projected_gravity_vicon[1], self.projected_gravity_vicon[2],
             self.projected_gravity[0], self.projected_gravity[1], self.projected_gravity[2],
         ]
 
@@ -307,6 +320,7 @@ class Controller:
             return
         dt = time_now - self.last_inference_time
         current_pos = self.vicon.position
+        current_quat = self.vicon.rotation
         self.last_inference_time = time_now
         self.logger.debug("-----------------------------------------------------")
         self.next_inference_time += self.policy.get_policy_interval()
@@ -322,8 +336,11 @@ class Controller:
             self.data_buffers[0]['rewards'].append(0)
             self.data_buffers[0]['timestamps'].append(0)
         self.global_lin_vel_vicon = (current_pos - self.prev_position) / dt
-        self.base_lin_vel_vicon = global_to_local_velocity(self.global_lin_vel_vicon, self.vicon.rotation)
+        self.base_lin_vel_vicon = global_to_local_velocity(self.global_lin_vel_vicon, current_quat)
+        self.base_ang_vel_vicon = omega(quaternion=current_quat, quaternion_prev=self.prev_quat, dt=dt)
         self.prev_position = current_pos
+        self.prev_quat = current_quat
+
         self.dof_target[:] = self.policy.inference(
             time_now=time_now,
             dof_pos=self.dof_pos,
