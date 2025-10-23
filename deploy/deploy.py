@@ -381,7 +381,7 @@ class Controller:
                 self.dof_vel[i] = motor.dq
 
             if self.step > 0:
-                if self.body_height < 0.4 or self.body_height > 0.75:
+                if self.body_height < 0.55 or self.body_height > 0.75:
                     self.logger.warning("body height risk: {}".format(self.body_height))
                     self.running = False
                 elif abs(self.global_lin_vel[0]) > 10.0 or abs(self.global_lin_vel[1]) > 10.0 or abs(self.global_lin_vel[2]) > 10.0:
@@ -761,7 +761,8 @@ if __name__ == "__main__":
                 file_path=npz_filename,
                 )
                 episode_num += 1
-                total_step += episode_step                
+                total_step += accepted_len     
+            print("current total step is ", total_step)           
             data_buffers[env_id]['state'].clear()
             data_buffers[env_id]['wm_state'].clear()
             data_buffers[env_id]['priv_state'].clear()
