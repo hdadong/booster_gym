@@ -618,7 +618,7 @@ def wait_for_yes():
     prompt_printed = False
     while True:
         if not prompt_printed:
-            print("\nPress d to restart, Press Y to continue: ", end="", flush=True)
+            print("\nPress d to restart, Press Y to continue, press s to send flag: ", end="", flush=True)
             prompt_printed = True
 
         line = None
@@ -638,7 +638,7 @@ def wait_for_yes():
             time.sleep(0.5)   # 没拿到输入设备，稍等再试
             continue
 
-        if line.strip().lower() == 'y' or line.strip().lower() == 'd':
+        if line.strip().lower() == 'y' or line.strip().lower() == 'd' or  line.strip().lower() == 's':
             print()  # 换行美观
             return line.strip().lower()
 
@@ -759,14 +759,15 @@ if __name__ == "__main__":
                 timestamps=timestamps_array,
             )
             input_flag = wait_for_yes()
-            if input_flag == 'y':
+            if input_flag == 'y' or input_flag == 's':
                 send_checkpoint_until_success(
                 ip=training_server,
                 port=data_port,
                 file_path=npz_filename,
                 )
                 episode_num += 1
-                total_step += accepted_len     
+                total_step += accepted_len
+
             print("current total step is ", total_step)           
             data_buffers[env_id]['state'].clear()
             data_buffers[env_id]['wm_state'].clear()
@@ -776,7 +777,14 @@ if __name__ == "__main__":
             data_buffers[env_id]['contacts'].clear()
             data_buffers[env_id]['rewards'].clear()
             data_buffers[env_id]['timestamps'].clear()
-
+            if  input_flag == 's' and total_step < max_episode_length :
+                open(flag_policy_train, 'w').close()
+                send_checkpoint_until_success(
+                ip=training_server,
+                port=flat_port,
+                file_path=flag_policy_train,
+                )
+                break
             
         open(flag_policy_train, 'w').close()
         send_checkpoint_until_success(
