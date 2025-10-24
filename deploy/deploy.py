@@ -362,7 +362,7 @@ class Controller:
             )
         self.acc_update_time = time_now
 
-        self.body_height = self.vicon.position[2]
+        self.body_height = self.vicon.position[2] - 0.01
         self.base_lin_vel_vicon = self.vicon.velocity
         self.base_ang_vel_vicon = self.vicon.rotation_rate
         if time_now >= self.next_inference_time:
