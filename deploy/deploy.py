@@ -289,6 +289,7 @@ class Controller:
             "vx_cmd","vy_cmd","vyaw_cmd",
             "rpy_roll","rpy_pitch","rpy_yaw",
             "acc_x","acc_y","acc_z",
+            "gyro_x_vicon","gyro_y_vicon","gyro_z_vicon",
             "gyro_x","gyro_y","gyro_z",
             "proj_gx","proj_gy","proj_gz",
         ]
@@ -307,6 +308,8 @@ class Controller:
         self.global_ang_vel = np.zeros(3, dtype=np.float32)
         self.global_lin_vel = np.zeros(3, dtype=np.float32)
         self.base_lin_vel_vicon = np.zeros(3, dtype=np.float32)
+        self.base_ang_vel_vicon = np.zeros(3, dtype=np.float32)
+
         self.base_lin_vel = np.zeros(3, dtype=np.float32)
         self.acc = np.zeros(3, dtype=np.float32)
         self.acc_update_time = self.timer.get_time()
@@ -361,6 +364,7 @@ class Controller:
 
         self.body_height = self.vicon.position[2]
         self.base_lin_vel_vicon = self.vicon.velocity
+        self.base_ang_vel_vicon = self.vicon.rotation_rate
         if time_now >= self.next_inference_time:
             self.projected_gravity[:] = rotate_vector_inverse_rpy(
                 low_state_msg.imu_state.rpy[0],
@@ -429,6 +433,7 @@ class Controller:
             self.remoteControlService.get_vyaw_cmd(),
             rpy[0], rpy[1], rpy[2],
             acc[0], acc[1], acc[2],
+            self.base_ang_vel_vicon[0], self.base_ang_vel_vicon[1], self.base_ang_vel_vicon[2],
             gyro[0], gyro[1], gyro[2],
             self.projected_gravity[0], self.projected_gravity[1], self.projected_gravity[2],
         ]
